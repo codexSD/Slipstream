@@ -31,11 +31,44 @@ class ChunkBitmap(private val chunkCount: Int) {
 
     fun toBase64(): String = Base64.getEncoder().encodeToString(data)
 
+    /** True when every chunk in range is marked complete. */
+    fun isComplete(): Boolean {
+        for (i in 0 until chunkCount) if (!this[i]) return false
+        return true
+    }
+
+    /** Defensive copy of the raw little-endian-per-byte bitmap bytes, for sidecar persistence. */
+    fun rawBytes(): ByteArray = data.copyOf()
+
+    /** Contiguous runs of chunk indices that are not yet complete, in ascending order. */
+    fun missingRanges(): List<IntRange> {
+        val ranges = mutableListOf<IntRange>()
+        var start = -1
+        for (i in 0 until chunkCount) {
+            if (!this[i]) {
+                if (start == -1) start = i
+            } else if (start != -1) {
+                ranges.add(start until i)
+                start = -1
+            }
+        }
+        if (start != -1) ranges.add(start until chunkCount)
+        return ranges
+    }
+
     companion object {
         fun chunkCountFor(fileSize: Long, chunkSize: Int): Int {
             require(fileSize >= 0) { "file size cannot be negative" }
             require(chunkSize > 0) { "chunk size must be positive" }
             return ceil(fileSize.toDouble() / chunkSize).toInt()
+        }
+
+        /** Restores a bitmap from previously persisted raw bytes (e.g. a sidecar file). */
+        fun fromBytes(bytes: ByteArray, chunkCount: Int): ChunkBitmap {
+            val bitmap = ChunkBitmap(chunkCount)
+            val byteCount = minOf(bytes.size, bitmap.data.size)
+            System.arraycopy(bytes, 0, bitmap.data, 0, byteCount)
+            return bitmap
         }
     }
 }

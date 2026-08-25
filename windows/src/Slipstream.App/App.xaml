@@ -6,6 +6,10 @@
     xmlns:local="using:Slipstream_App">
     <Application.Resources>
         <ResourceDictionary>
+            <ResourceDictionary.ThemeDictionaries>
+                <ResourceDictionary x:Key="Light" Source="ms-appx:///Slipstream.Meridian/Themes/Tokens.Light.xaml" />
+                <ResourceDictionary x:Key="Dark"  Source="ms-appx:///Slipstream.Meridian/Themes/Tokens.Dark.xaml" />
+            </ResourceDictionary.ThemeDictionaries>
             <ResourceDictionary.MergedDictionaries>
                 <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls" />
                 <!-- Other merged dictionaries here -->

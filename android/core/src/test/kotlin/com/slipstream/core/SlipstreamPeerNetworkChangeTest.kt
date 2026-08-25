@@ -1,5 +1,6 @@
 package com.slipstream.core
 
+import android.net.Network
 import com.slipstream.core.control.ClipboardSink
 import com.slipstream.core.discovery.DiscoveryCoordinator
 import com.slipstream.core.identity.DeviceIdentity
@@ -37,6 +38,27 @@ private class FixedNetworkInfo(private val network: LocalNetwork?) : NetworkInfo
  * boot, where `onAvailable` routinely beats the interface actually coming up. */
 private class MutableNetworkInfo(@Volatile var network: LocalNetwork?) : NetworkInfo {
     override fun current(): LocalNetwork? = network
+}
+
+/**
+ * A [NetworkInfo] that also knows *which* [Network] the address it currently reports belongs
+ * to - the attestation the real `AndroidNetworkInfo` derives from `LinkProperties`. Setting
+ * [owner] to null models the case where no attestation is available at all (the hotspot/AP
+ * interface, which `ConnectivityManager` never surfaces for the device hosting it).
+ */
+private class AttestingNetworkInfo(
+    @Volatile private var local: LocalNetwork?,
+    @Volatile private var owner: Network?,
+) : NetworkInfo {
+    override fun current(): LocalNetwork? = local
+
+    override fun attestBelongsTo(network: Network, local: LocalNetwork): Boolean? =
+        owner?.let { it == network }
+
+    fun report(local: LocalNetwork?, owner: Network?) {
+        this.local = local
+        this.owner = owner
+    }
 }
 
 /** Three ports that were free a moment ago. Deliberately *fixed* for the storm test: with
@@ -264,6 +286,77 @@ class SlipstreamPeerNetworkChangeTest {
         release.countDown()
         first.join(10_000)
         part.close()
+        peer.close()
+    }
+
+    @Test
+    fun `a change to a network whose interface is not up yet never binds the stale address`() {
+        // The bug this guards: current() can return a perfectly valid address belonging to the
+        // interface we are *leaving* while the newly reported network's own interface is still
+        // coming up. A gate that only asks "is there any local address at all?" binds that stale
+        // address and - because the apply then counts as successful - dedups away the corrective
+        // retry, leaving every server listening where no peer can reach them.
+        val stale = LocalNetwork(InetAddress.getByName("127.0.0.2"), null, 32, "if:stale")
+        val fresh = LocalNetwork(LOOPBACK, null, 32, "if:fresh")
+        val departing = ShadowNetwork.newInstance(21)
+        val arriving = ShadowNetwork.newInstance(22)
+
+        val networkInfo = AttestingNetworkInfo(stale, departing)
+        val peer = peer(networkInfo, threeFreePorts())
+
+        peer.onNetworkChanged(arriving)
+        assertEquals(
+            "an address attested to the network we just left must never be bound",
+            0,
+            peer.runningServerCount,
+        )
+
+        networkInfo.report(fresh, arriving)
+        peer.onNetworkChanged(arriving)
+
+        assertEquals("once the interface is up the retry must bring the servers up", 3, peer.runningServerCount)
+        assertEquals(
+            "and on the newly reported network's own address",
+            LOOPBACK,
+            peer.controlEndpoint?.address,
+        )
+        peer.close()
+    }
+
+    @Test
+    fun `two rapid changes to the same network still dedup`() {
+        // No attestation available (the AP case): readiness falls back to a stable enumeration,
+        // which must still leave the dedup intact - one bind, not a bind storm.
+        val networkInfo = AttestingNetworkInfo(LocalNetwork(LOOPBACK, null, 32, "if:one"), null)
+        val teardowns = AtomicInteger(0)
+        val peer = peer(networkInfo, threeFreePorts(), onTeardown = { teardowns.incrementAndGet() })
+        val network = ShadowNetwork.newInstance(31)
+
+        peer.onNetworkChanged(network)
+        peer.onNetworkChanged(network)
+
+        assertEquals("the second event for the same network must be a no-op", 1, teardowns.get())
+        assertEquals(3, peer.runningServerCount)
+        peer.close()
+    }
+
+    @Test
+    fun `a change to a genuinely different network always rebinds`() {
+        val first = ShadowNetwork.newInstance(41)
+        val second = ShadowNetwork.newInstance(42)
+        val networkInfo = AttestingNetworkInfo(LocalNetwork(LOOPBACK, null, 32, "if:one"), first)
+        val teardowns = AtomicInteger(0)
+        val peer = peer(networkInfo, threeFreePorts(), onTeardown = { teardowns.incrementAndGet() })
+
+        peer.onNetworkChanged(first)
+        assertEquals(3, peer.runningServerCount)
+
+        networkInfo.report(LocalNetwork(InetAddress.getByName("127.0.0.2"), null, 32, "if:two"), second)
+        peer.onNetworkChanged(second)
+
+        assertEquals("a different network must always rebind", 2, teardowns.get())
+        assertEquals(3, peer.runningServerCount)
+        assertEquals(InetAddress.getByName("127.0.0.2"), peer.controlEndpoint?.address)
         peer.close()
     }
 

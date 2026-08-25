@@ -36,6 +36,7 @@ import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.thread
 import kotlin.concurrent.withLock
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
@@ -92,6 +93,15 @@ class SlipstreamPeer(
     private val controlPort: Int = SlipstreamPorts.CONTROL,
     private val bulkPort: Int = SlipstreamPorts.BULK,
     private val mediaPort: Int = SlipstreamPorts.MEDIA,
+    /**
+     * How long [onNetworkChanged] will wait for the network it was just told about to actually
+     * produce a bindable interface, and how often it re-reads while waiting. See
+     * [awaitNetworkReady]. The window is short on purpose: it runs on a framework
+     * `NetworkCallback` thread, and failing to reach readiness is not fatal - it just leaves the
+     * event un-applied so the next one for the same network retries.
+     */
+    private val readinessWindow: Duration = 1.seconds,
+    private val readinessPollInterval: Duration = 50.milliseconds,
     /** Lifecycle hooks fired during [onNetworkChanged], mainly so callers (including tests)
      * can observe the tear-down / re-discovery / resume sequence without reaching into
      * private state. Production use is expected too, e.g. surfacing status to the UI. */
@@ -423,7 +433,7 @@ class SlipstreamPeer(
             networkBinder.network = network
 
             // Only a *successful* apply is recorded (below). If startServers() throws, or the
-            // network's interface is not ready yet (networkInfo.current() == null - routine on
+            // network's interface is not ready yet (see [awaitNetworkReady] - routine on
             // boot, where onAvailable can beat the interface coming up), this event must leave
             // the dedup state untouched, so the next event for the SAME network - typically the
             // onCapabilitiesChanged that arrives once the interface *is* ready - is still
@@ -440,7 +450,7 @@ class SlipstreamPeer(
                     // "No network" is a complete, successfully applied state: there is nothing
                     // to start, and the torn-down peer is exactly right.
                     applied = true
-                } else if (networkInfo.current() != null) {
+                } else if (awaitNetworkReady(network)) {
                     startServers()
                     applied = true
                 }
@@ -469,6 +479,57 @@ class SlipstreamPeer(
                 onRediscover(result)
             }
             resumeActivePulls()
+        }
+    }
+
+    /**
+     * The readiness gate for a network change: has the network just reported actually produced
+     * an interface we can bind to yet?
+     *
+     * Asking only "does [NetworkInfo.current] return something?" is not enough, and getting that
+     * wrong silently reproduces the bug the live-interface selection exists to fix. `current()`
+     * enumerates every live interface, so it happily returns the address of the interface we are
+     * *leaving* while the newly reported network's own interface is still coming up. Binding
+     * that address counts as a successful apply, which records the dedup state - so the very
+     * next event for the same network, the one that would have found the right address, is
+     * dropped as a duplicate and every server stays listening where no peer can reach it.
+     *
+     * So readiness is decided against the *specific* [network]:
+     *  - [NetworkInfo.attestBelongsTo] says `true`: the address genuinely belongs to this
+     *    network's link. Ready immediately.
+     *  - It says `false`: the address is attested to some other link. Not ready - keep looking.
+     *  - It cannot tell (`null`): fall back to enumeration stability - the same address must be
+     *    reported twice, [readinessPollInterval] apart. This is the load-bearing case for a
+     *    device hosting a hotspot, whose AP interface `ConnectivityManager` never surfaces and
+     *    therefore can never attest; an interface mid-transition is what stability rejects.
+     *
+     * If neither condition is met inside [readinessWindow] this returns false, which leaves the
+     * dedup state untouched, so the next event for the same network retries rather than the peer
+     * binding optimistically. It never widens the dedup window: a repeat of an *applied* network
+     * is still ignored, and a genuinely different network still rebinds.
+     */
+    private fun awaitNetworkReady(network: android.net.Network): Boolean {
+        val deadline = System.nanoTime() + readinessWindow.inWholeNanoseconds
+        var previousKey: String? = null
+
+        while (true) {
+            val local = networkInfo.current()
+            if (local != null) {
+                when (networkInfo.attestBelongsTo(network, local)) {
+                    true -> return true
+                    null -> if (previousKey == local.key) return true
+                    false -> Unit
+                }
+            }
+            previousKey = local?.key
+
+            if (System.nanoTime() >= deadline) return false
+            try {
+                Thread.sleep(readinessPollInterval.inWholeMilliseconds)
+            } catch (e: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return false
+            }
         }
     }
 

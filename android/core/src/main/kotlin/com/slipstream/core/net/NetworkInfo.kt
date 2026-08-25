@@ -3,6 +3,7 @@ package com.slipstream.core.net
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.LinkProperties
+import android.net.Network
 import java.net.Inet4Address
 import java.net.InetAddress
 
@@ -19,6 +20,24 @@ data class LocalNetwork(
 
 interface NetworkInfo {
     fun current(): LocalNetwork?
+
+    /**
+     * Whether [local] is known to sit on [network]'s own link - the question
+     * [com.slipstream.core.SlipstreamPeer.onNetworkChanged] has to answer before it binds
+     * servers to the address a network change just implied.
+     *
+     * Deliberately three-valued:
+     *  - `true`  - attested match; the address genuinely belongs to the reported network.
+     *  - `false` - attested mismatch; the address belongs to some *other* link, which is
+     *              exactly the stale-address case a naive "is there any address?" gate binds.
+     *  - `null`  - cannot tell. This is not an error state: the interface a device hosts its
+     *              own hotspot on is never surfaced by `ConnectivityManager`, so the AP address
+     *              the hotspot fix exists to select can never be attested against a `Network`.
+     *
+     * The default is `null` so a [NetworkInfo] that has no framework to ask (every test fake,
+     * and any future non-Android implementation) simply declines to attest.
+     */
+    fun attestBelongsTo(network: Network, local: LocalNetwork): Boolean? = null
 }
 
 /**
@@ -54,6 +73,31 @@ class AndroidNetworkInfo internal constructor(
             linkAddresses = properties.linkAddresses.map { it.address to it.prefixLength },
             gatewayAddresses = properties.routes.mapNotNull { it.gateway },
         )
+    }
+
+    /**
+     * Answers from [LinkProperties], the only place the framework describes a specific
+     * [Network]'s own link. `null` ("cannot tell") is returned generously - whenever the
+     * framework has nothing to say about this network, or says nothing about IPv4 local
+     * addresses at all - because a device hosting a hotspot gets no `LinkProperties` for its
+     * own AP interface, and a hard "no" there would refuse to bind the very address the
+     * live-interface selection above exists to find.
+     */
+    override fun attestBelongsTo(network: Network, local: LocalNetwork): Boolean? {
+        val connectivityManager =
+            context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+                ?: return null
+        val properties = runCatching { connectivityManager.getLinkProperties(network) }
+            .getOrNull() ?: return null
+
+        val linkAddresses = properties.linkAddresses.map { it.address }
+        if (linkAddresses.any { it == local.localAddress }) return true
+
+        // A definite "no" only when this network does describe a usable IPv4 local link of its
+        // own and [local] is not on it - i.e. the address genuinely belongs somewhere else.
+        val describesLocalIpv4 =
+            linkAddresses.any { it is Inet4Address && LanGuard.isLocal(it) }
+        return if (describesLocalIpv4) false else null
     }
 
     /** Best-effort gateway lookup; never load-bearing for the bind address. */

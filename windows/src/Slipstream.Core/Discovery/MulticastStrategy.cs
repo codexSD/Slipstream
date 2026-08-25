@@ -121,6 +121,34 @@ public sealed class MulticastStrategy : IDiscoveryStrategy, IAsyncDisposable
     }
 
     /// <summary>
+    /// Subscribes to every parsed announcement from the shared reader loop, regardless of
+    /// trust — filtering by trust (or lack of it) is the caller's job, not the reader's.
+    /// Used by pairing discovery, which must see unpaired peers that <see cref="FindAsync"/>
+    /// would filter out.
+    /// </summary>
+    public async IAsyncEnumerable<(PeerAnnouncement Announcement, IPEndPoint Source)> SubscribeAsync(
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        EnsureReceiveLoopStarted();
+
+        var channel = Channel.CreateUnbounded<(PeerAnnouncement Announcement, IPEndPoint RemoteEndPoint)>();
+        Subscribe(channel);
+
+        try
+        {
+            while (await channel.Reader.WaitToReadAsync(cancellationToken))
+            {
+                while (channel.Reader.TryRead(out var item))
+                    yield return item;
+            }
+        }
+        finally
+        {
+            Unsubscribe(channel);
+        }
+    }
+
+    /// <summary>
     /// The always-on responder: reply by unicast to any query from the paired peer.
     /// Run by the server for the lifetime of the app. The actual query handling happens
     /// inline in the shared receive loop (see <see cref="ReceiveLoopAsync"/>) so it can never

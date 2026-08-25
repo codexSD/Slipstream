@@ -301,11 +301,13 @@ public class PartFileTests : IDisposable
 
         // Hold the destination open so the replace cannot succeed. On Windows, File.Move
         // against a handle opened with FileShare.None surfaces as
-        // UnauthorizedAccessException rather than IOException, so we assert broadly on
-        // the failure itself — the behavior under test is that the original survives.
+        // UnauthorizedAccessException rather than IOException, so we accept either —
+        // narrowly, not any Exception — while still asserting the original survives.
         await using (new FileStream(Destination, FileMode.Open, FileAccess.Read, FileShare.None))
         {
-            await Assert.ThrowsAnyAsync<Exception>(() => part.CompleteAsync(CancellationToken.None));
+            var ex = await Record.ExceptionAsync(() => part.CompleteAsync(CancellationToken.None));
+            Assert.True(ex is IOException or UnauthorizedAccessException,
+                $"Expected IOException or UnauthorizedAccessException, got {ex?.GetType()}");
         }
 
         // The pre-existing file must still be there, intact.

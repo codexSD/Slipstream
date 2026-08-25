@@ -118,6 +118,61 @@ public class MulticastStrategyTests : IDisposable
         Assert.NotNull(await find);
     }
 
+    [Fact]
+    public async Task Responder_and_find_run_concurrently_without_stealing_each_others_datagrams()
+    {
+        // Regression test for the single-socket race: RespondToQueriesAsync (always-on, for the
+        // app's lifetime) and FindAsync (per discovery attempt) both used to issue their own
+        // ReceiveAsync on the same UdpClient, so a datagram meant for one loop could be consumed
+        // by the other instead. This proves a single MulticastStrategy instance can run both
+        // concurrently and each still gets the datagram it needs.
+        var (identity, peers) = Paired("deadbeef");
+        var probe = new FakeProbe("127.0.0.1:53321");
+
+        await using var strategy = new MulticastStrategy(identity, peers, probe.Probe, listenPort: 0);
+
+        using var responderCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var responder = strategy.RespondToQueriesAsync(responderCts.Token);
+
+        using var findCts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var find = strategy.FindAsync(Network(), findCts.Token);
+
+        await Task.Delay(200); // let both loops start listening
+
+        // A separate "querying peer" sends a query; only the responder path should reply to it.
+        using var querier = new UdpClient(AddressFamily.InterNetwork);
+        querier.Client.Bind(new IPEndPoint(IPAddress.Loopback, 0));
+        await querier.SendAsync(new PeerAnnouncement(
+            SlipstreamPorts.ProtocolVersion, "peer-device", "Test Phone",
+            "deadbeef", SlipstreamPorts.Control, AnnouncementKind.Query).ToBytes(), strategy.ListenEndPoint);
+
+        var receiveReplyTask = querier.ReceiveAsync();
+
+        // Meanwhile the paired peer's announce arrives; only the FindAsync path should consume it.
+        await SendUnicastAsync(strategy.ListenEndPoint, new PeerAnnouncement(
+            SlipstreamPorts.ProtocolVersion, "peer-device", "Test Phone",
+            "deadbeef", SlipstreamPorts.Control, AnnouncementKind.Announce));
+
+        var completedReply = await Task.WhenAny(receiveReplyTask, Task.Delay(TimeSpan.FromSeconds(5)));
+        Assert.Same(receiveReplyTask, completedReply);
+        var replyResult = await receiveReplyTask;
+        var reply = PeerAnnouncement.TryParse(replyResult.Buffer);
+        Assert.NotNull(reply);
+        Assert.Equal(AnnouncementKind.Announce, reply!.Kind);
+
+        var found = await find;
+        Assert.NotNull(found);
+        Assert.Equal(53321, found.Endpoint.Port);
+
+        responderCts.Cancel();
+        await SwallowAsync(responder);
+    }
+
+    private static async Task SwallowAsync(Task task)
+    {
+        try { await task; } catch (OperationCanceledException) { }
+    }
+
     private static async Task SendUnicastAsync(IPEndPoint target, PeerAnnouncement announcement)
     {
         await Task.Delay(200); // let the listener bind

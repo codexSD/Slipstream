@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
 using Slipstream.Core.Identity;
@@ -20,6 +21,7 @@ public sealed class ControlServer : IAsyncDisposable
     private readonly PairedPeerStore _peers;
     private readonly TcpListener _listener;
     private readonly PairingWindow? _pairingWindow;
+    private readonly ConcurrentDictionary<ControlConnection, byte> _connections = new();
 
     public ControlServer(
         DeviceIdentity identity,
@@ -38,6 +40,13 @@ public sealed class ControlServer : IAsyncDisposable
     }
 
     public IPEndPoint ListenEndPoint => (IPEndPoint)_listener.LocalEndpoint;
+
+    /// <summary>
+    /// Every trusted connection currently accepted (i.e. <see cref="PeerConnected"/> is live
+    /// for it). Exposed so callers can observe or, in tests, forcibly sever the live control
+    /// channel without reaching into networking internals.
+    /// </summary>
+    public IReadOnlyCollection<ControlConnection> Connections => _connections.Keys.ToList();
 
     /// <summary>Raised once per accepted, fingerprint-verified connection.</summary>
     public event Func<ControlConnection, CancellationToken, Task>? PeerConnected;
@@ -103,8 +112,16 @@ public sealed class ControlServer : IAsyncDisposable
 
             await using var connection = new ControlConnection(stream, fingerprint, remote);
 
-            var handler = trusted ? PeerConnected : PairingConnected;
-            if (handler is not null) await handler(connection, cancellationToken);
+            if (trusted) _connections.TryAdd(connection, 0);
+            try
+            {
+                var handler = trusted ? PeerConnected : PairingConnected;
+                if (handler is not null) await handler(connection, cancellationToken);
+            }
+            finally
+            {
+                _connections.TryRemove(connection, out _);
+            }
         }
         catch (Exception)
         {

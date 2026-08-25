@@ -8,6 +8,7 @@ import com.slipstream.core.net.NetworkInfo
 import com.slipstream.core.net.NonLocalAddressException
 import java.net.InetAddress
 import java.net.InetSocketAddress
+import java.net.ServerSocket
 import java.net.Socket
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -140,6 +141,51 @@ class ControlChannelTest {
             conn.close()
         } finally {
             server.close()
+        }
+    }
+
+    // --- Read-cap teardown (protocol.md §5) ---
+
+    @Test
+    fun `receive tears down the socket when a line exceeds the read cap, regardless of caller`() {
+        // Plain (non-TLS) loopback socket pair: the teardown guarantee lives in
+        // ControlConnection.receive() itself, not in any TLS or ControlServer scaffolding.
+        val serverSocket = ServerSocket(0, 0, LOOPBACK)
+        try {
+            val clientSocket = Socket(LOOPBACK, serverSocket.localPort)
+            val acceptedSocket = serverSocket.accept()
+
+            try {
+                val overLong = "x".repeat(JsonLineCodec.MAX_LINE_BYTES + 10) + "\n"
+                // Write on a separate thread: the payload exceeds typical OS socket buffers, so a
+                // synchronous write here would block until something reads — but nothing reads
+                // until conn.receive() below, which would deadlock the test.
+                val writer = Thread {
+                    clientSocket.getOutputStream().write(overLong.toByteArray(Charsets.UTF_8))
+                    clientSocket.getOutputStream().flush()
+                }
+                writer.isDaemon = true
+                writer.start()
+
+                // Call receive() directly - no ControlServer/try-catch in the call stack to
+                // accidentally supply the teardown.
+                val conn = ControlConnection(acceptedSocket)
+                try {
+                    conn.receive()
+                    fail("expected LineTooLargeException")
+                } catch (e: LineTooLargeException) {
+                    // expected
+                }
+
+                assertTrue("socket must be closed by receive() itself, not by the caller", conn.isClosed)
+                assertTrue("underlying socket must be closed", acceptedSocket.isClosed)
+                writer.join(5000)
+            } finally {
+                clientSocket.close()
+                if (!acceptedSocket.isClosed) acceptedSocket.close()
+            }
+        } finally {
+            serverSocket.close()
         }
     }
 

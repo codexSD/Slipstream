@@ -17,6 +17,17 @@ public sealed class FakePeerHost : IPeerHost
 
     public event Action<PeerConnectionState, string?, string?>? StateChanged;
 
+    /// <summary>Set true once <see cref="PairAsync"/> has run its confirm callback to
+    /// completion and the callback returned true. Tests that never call
+    /// <see cref="PairAsync"/> at all (e.g. a decline that happens before pairing starts)
+    /// correctly leave this false.</summary>
+    public bool Paired { get; private set; }
+
+    /// <summary>The code <see cref="PairAsync"/> hands to the confirm callback. Tests set
+    /// this before calling <see cref="PairAsync"/> to simulate the code that arrived from
+    /// the peer (derivation itself is Slipstream.Core's concern, not this fake's).</summary>
+    public string PairingCode { get; set; } = "000000";
+
     public void RaiseState(PeerConnectionState state, string? peerName, string? band = null)
     {
         State = state;
@@ -46,6 +57,13 @@ public sealed class FakePeerHost : IPeerHost
 
     public Task SendClipboardAsync(string text, CancellationToken ct) => Task.CompletedTask;
 
-    public Task<PairedPeer?> PairAsync(Func<string, CancellationToken, Task<bool>> confirm, CancellationToken ct)
-        => Task.FromResult<PairedPeer?>(null);
+    public async Task<PairedPeer?> PairAsync(Func<string, CancellationToken, Task<bool>> confirm, CancellationToken ct)
+    {
+        var confirmed = await confirm(PairingCode, ct);
+        if (!confirmed)
+            return null;
+
+        Paired = true;
+        return new PairedPeer("fake-device-id", "fake-fingerprint", PeerName ?? "Fake Peer", DateTimeOffset.UtcNow);
+    }
 }

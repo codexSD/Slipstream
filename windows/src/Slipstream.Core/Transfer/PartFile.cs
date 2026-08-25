@@ -20,8 +20,12 @@ public sealed class PartFile : IAsyncDisposable
 
     private sealed record State(Guid TransferId, long Size, int ChunkSize, string Bitmap);
 
+    private static readonly TimeSpan PersistInterval = TimeSpan.FromMilliseconds(500);
+
     private readonly FileStream _stream;
-    private readonly SemaphoreSlim _bitmapLock = new(1, 1);
+    private readonly Lock _bitmapGate = new();
+    private DateTimeOffset _lastPersist = DateTimeOffset.MinValue;
+    private bool _dirty;
     private bool _completed;
 
     private PartFile(string destinationPath, string partPath, FileStream stream,
@@ -120,21 +124,27 @@ public sealed class PartFile : IAsyncDisposable
         var offset = (long)chunkIndex * ChunkSize;
         await RandomAccess.WriteAsync(_stream.SafeFileHandle, data, offset, cancellationToken);
 
-        await _bitmapLock.WaitAsync(cancellationToken);
-        try
+        bool shouldPersist;
+        lock (_bitmapGate)
         {
+            // The lock covers the bit flip only — a few nanoseconds. Doing file I/O in
+            // here would serialise every parallel stream behind one write per chunk.
             Bitmap[chunkIndex] = true;
-            await PersistStateAsync(cancellationToken);
+            _dirty = true;
+
+            var now = DateTimeOffset.UtcNow;
+            shouldPersist = now - _lastPersist >= PersistInterval;
+            if (shouldPersist) _lastPersist = now;
         }
-        finally
-        {
-            _bitmapLock.Release();
-        }
+
+        if (shouldPersist) await PersistStateAsync(cancellationToken);
     }
 
     public async Task<bool> CompleteAsync(CancellationToken cancellationToken)
     {
         if (!Bitmap.IsComplete) return false;
+
+        await PersistStateAsync(cancellationToken);
 
         await _stream.FlushAsync(cancellationToken);
         _stream.Flush(flushToDisk: true); // the one and only fsync
@@ -176,15 +186,35 @@ public sealed class PartFile : IAsyncDisposable
         return removed;
     }
 
-    private Task PersistStateAsync(CancellationToken cancellationToken) =>
-        File.WriteAllTextAsync(
-            StatePath,
-            JsonSerializer.Serialize(new State(TransferId, Size, ChunkSize, Bitmap.ToBase64())),
-            cancellationToken);
+    private async Task PersistStateAsync(CancellationToken cancellationToken)
+    {
+        string payload;
+        lock (_bitmapGate)
+        {
+            payload = JsonSerializer.Serialize(new State(TransferId, Size, ChunkSize, Bitmap.ToBase64()));
+            _dirty = false;
+        }
+
+        var staging = StatePath + ".tmp";
+        await File.WriteAllTextAsync(staging, payload, cancellationToken);
+        File.Move(staging, StatePath, overwrite: true);
+    }
 
     public async ValueTask DisposeAsync()
     {
-        if (!_completed) await _stream.DisposeAsync();
-        _bitmapLock.Dispose();
+        if (!_completed)
+        {
+            bool dirty;
+            lock (_bitmapGate) dirty = _dirty;
+
+            // A debounced write must never cost progress that was actually made.
+            if (dirty)
+            {
+                try { await PersistStateAsync(CancellationToken.None); }
+                catch (IOException) { /* best effort on the way out */ }
+            }
+
+            await _stream.DisposeAsync();
+        }
     }
 }

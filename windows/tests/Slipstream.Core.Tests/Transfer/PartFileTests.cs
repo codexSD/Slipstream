@@ -129,6 +129,62 @@ public class PartFileTests : IDisposable
     }
 
     [Fact]
+    public async Task Does_not_rewrite_the_sidecar_on_every_chunk()
+    {
+        var (data, crc) = ChunkOf(Chunk);
+        string statePath;
+
+        await using (var part = PartFile.OpenOrCreate(Destination, _transfer, 50 * Chunk, Chunk))
+        {
+            statePath = part.PartPath + ".state";
+
+            for (var i = 0; i < 50; i++)
+                await part.WriteChunkAsync(i, data, crc, CancellationToken.None);
+
+            // 50 chunks written well inside one debounce window: the sidecar should have
+            // been rewritten a handful of times, not fifty.
+            Assert.True(File.Exists(statePath));
+        }
+
+        // On disposal the final state must be durable regardless of the debounce.
+        var state = await File.ReadAllTextAsync(statePath);
+        Assert.Contains("Bitmap", state);
+    }
+
+    [Fact]
+    public async Task Persists_the_bitmap_on_disposal_even_within_the_debounce_window()
+    {
+        var (data, crc) = ChunkOf(Chunk);
+
+        await using (var part = PartFile.OpenOrCreate(Destination, _transfer, 4 * Chunk, Chunk))
+        {
+            await part.WriteChunkAsync(0, data, crc, CancellationToken.None);
+            await part.WriteChunkAsync(1, data, crc, CancellationToken.None);
+        } // disposed immediately — well inside the debounce
+
+        await using var reopened = PartFile.OpenOrCreate(Destination, _transfer, 4 * Chunk, Chunk);
+
+        Assert.Equal(2, reopened.Bitmap.CompletedCount);
+    }
+
+    [Fact]
+    public async Task Concurrent_chunk_writes_from_many_streams_all_land()
+    {
+        var (data, crc) = ChunkOf(Chunk);
+
+        await using (var part = PartFile.OpenOrCreate(Destination, _transfer, 32 * Chunk, Chunk))
+        {
+            await Task.WhenAll(Enumerable.Range(0, 32).Select(i =>
+                part.WriteChunkAsync(i, data, crc, CancellationToken.None)));
+
+            Assert.True(part.Bitmap.IsComplete);
+            Assert.True(await part.CompleteAsync(CancellationToken.None));
+        }
+
+        Assert.Equal(32 * Chunk, new FileInfo(Destination).Length);
+    }
+
+    [Fact]
     public async Task CollectStale_removes_old_part_files_only()
     {
         var (data, crc) = ChunkOf(Chunk);

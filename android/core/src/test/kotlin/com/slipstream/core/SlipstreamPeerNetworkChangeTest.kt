@@ -21,6 +21,7 @@ import kotlin.concurrent.thread
 import kotlin.io.path.createTempDirectory
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -29,6 +30,12 @@ import org.robolectric.shadows.ShadowNetwork
 private val LOOPBACK: InetAddress = InetAddress.getByName("127.0.0.1")
 
 private class FixedNetworkInfo(private val network: LocalNetwork?) : NetworkInfo {
+    override fun current(): LocalNetwork? = network
+}
+
+/** A [NetworkInfo] whose answer can change between events - which is exactly what happens on
+ * boot, where `onAvailable` routinely beats the interface actually coming up. */
+private class MutableNetworkInfo(@Volatile var network: LocalNetwork?) : NetworkInfo {
     override fun current(): LocalNetwork? = network
 }
 
@@ -138,6 +145,83 @@ class SlipstreamPeerNetworkChangeTest {
         val peer = peer(FixedNetworkInfo(null), onTeardown = { teardowns.incrementAndGet() })
         peer.onNetworkChanged(null)
         assertEquals(1, teardowns.get())
+        peer.close()
+    }
+
+    @Test
+    fun `an event skipped because the interface was not ready yet is retried for the same network`() {
+        // The boot case: BootReceiver starts the service, onAvailable(N) fires before the Wi-Fi
+        // interface has an address, so there is nothing to bind to. If that counted as "applied",
+        // the very next onCapabilitiesChanged(N) - the event that *would* find it ready - would
+        // be dropped as a duplicate and the peer would never start at all.
+        val networkInfo = MutableNetworkInfo(null)
+        val teardowns = AtomicInteger(0)
+        val peer = peer(networkInfo, threeFreePorts(), onTeardown = { teardowns.incrementAndGet() })
+        val network = ShadowNetwork.newInstance(11)
+
+        peer.onNetworkChanged(network)
+        assertEquals(1, teardowns.get())
+        assertEquals("nothing to bind to yet, so no servers", 0, peer.runningServerCount)
+
+        networkInfo.network = LocalNetwork(LOOPBACK, null, 32, "k")
+        peer.onNetworkChanged(network)
+
+        assertEquals("the repeat of an un-applied network must not be deduped away", 2, teardowns.get())
+        assertEquals("the retry must actually bring the servers up", 3, peer.runningServerCount)
+        peer.close()
+    }
+
+    @Test
+    fun `an event whose server start failed is retried for the same network`() {
+        // A local address that cannot be bound - the same shape as "the previous listen socket
+        // has not been released yet", which makes startServers() throw.
+        val unbindable = LocalNetwork(InetAddress.getByName("203.0.113.9"), null, 32, "k")
+        val networkInfo = MutableNetworkInfo(unbindable)
+        val teardowns = AtomicInteger(0)
+        val peer = peer(networkInfo, threeFreePorts(), onTeardown = { teardowns.incrementAndGet() })
+        val network = ShadowNetwork.newInstance(12)
+
+        peer.onNetworkChanged(network)
+        assertEquals(1, teardowns.get())
+        assertEquals("the failed start must leave nothing behind", 0, peer.runningServerCount)
+
+        networkInfo.network = LocalNetwork(LOOPBACK, null, 32, "k")
+        peer.onNetworkChanged(network)
+
+        assertEquals("a failed apply must not block a retry for the same network", 2, teardowns.get())
+        assertEquals(3, peer.runningServerCount)
+        peer.close()
+    }
+
+    @Test
+    fun `a live pullFile blocks a concurrent resume of the same transfer`() {
+        val dir = createTempDirectory().toFile()
+        val peer = peer(FixedNetworkInfo(null), dir = dir, onResumeAttempt = { fail("resume must dedup against the live pull") })
+
+        // The primary writer's own claim: a resume landing mid-pull would otherwise start a
+        // second TransferEngine.pull loop over the same PartFile and interleave chunk writes.
+        val transferId = UUID.randomUUID()
+        val part = PartFile.openOrCreate(File(dir, "live.bin"), transferId, size = 64, chunkSize = 16)
+        val started = CountDownLatch(1)
+        val release = CountDownLatch(1)
+
+        val puller = thread(isDaemon = true) {
+            peer.withPullClaim(transferId) {
+                peer.activePulls[transferId] = SlipstreamPeer.ActivePull(
+                    part, 2, "video.mp4", InetSocketAddress(LOOPBACK, 53321),
+                )
+                started.countDown()
+                release.await(10, TimeUnit.SECONDS)
+                peer.activePulls.remove(transferId)
+            }
+        }
+        assertTrue(started.await(10, TimeUnit.SECONDS))
+
+        peer.resumeActivePulls()
+
+        release.countDown()
+        puller.join(10_000)
+        part.close()
         peer.close()
     }
 

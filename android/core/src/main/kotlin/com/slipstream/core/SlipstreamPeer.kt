@@ -200,10 +200,16 @@ class SlipstreamPeer(
             // has not actually changed. Restarting the servers for one of those would kill every
             // in-flight inbound transfer and live control session for no reason at all.
             if (hasAppliedNetwork && network == appliedNetwork) return
-            hasAppliedNetwork = true
-            appliedNetwork = network
 
             networkBinder.network = network
+
+            // Only a *successful* apply is recorded (below). If startServers() throws, or the
+            // network's interface is not ready yet (networkInfo.current() == null - routine on
+            // boot, where onAvailable can beat the interface coming up), this event must leave
+            // the dedup state untouched, so the next event for the SAME network - typically the
+            // onCapabilitiesChanged that arrives once the interface *is* ready - is still
+            // processed instead of being silently dropped as a duplicate.
+            var applied = false
 
             // A failure here (e.g. networkInfo.current() racing to null, or the previous
             // listen socket not yet fully released) must never propagate: this runs on a
@@ -211,13 +217,23 @@ class SlipstreamPeer(
             // foreground service down on a routine Wi-Fi transition.
             try {
                 teardown()
-                if (network != null && networkInfo.current() != null) {
+                if (network == null) {
+                    // "No network" is a complete, successfully applied state: there is nothing
+                    // to start, and the torn-down peer is exactly right.
+                    applied = true
+                } else if (networkInfo.current() != null) {
                     startServers()
+                    applied = true
                 }
             } catch (e: Exception) {
                 // Leave the peer in the cleanly-torn-down state; the next network event (or an
                 // explicit start()) restarts it.
                 closeServers()
+            }
+
+            if (applied) {
+                hasAppliedNetwork = true
+                appliedNetwork = network
             }
 
             thread(isDaemon = true) {
@@ -277,6 +293,21 @@ class SlipstreamPeer(
         }
     }
 
+    /**
+     * Runs [body] holding the [resumeInFlight] claim for [transferId] - the same claim
+     * [resumeActivePulls] checks - so exactly one [TransferEngine.pull] loop can be writing a
+     * given [PartFile] at a time, whether it was started by [pullFile] (the primary writer) or
+     * by a resume. Internal so a test can hold a claim without running a real transfer.
+     */
+    internal fun <T> withPullClaim(transferId: UUID, body: () -> T): T {
+        val claimed = resumeInFlight.putIfAbsent(transferId, Unit) == null
+        try {
+            return body()
+        } finally {
+            if (claimed) resumeInFlight.remove(transferId)
+        }
+    }
+
     private data class Negotiated(val session: BulkSession, val size: Long)
 
     private fun negotiatePull(peerControlEndpoint: InetSocketAddress, remotePath: String, streams: Int): Negotiated {
@@ -311,12 +342,20 @@ class SlipstreamPeer(
      */
     fun pullFile(peerControlEndpoint: InetSocketAddress, remotePath: String, destination: File, streams: Int = 4): PartFile {
         val first = negotiatePull(peerControlEndpoint, remotePath, streams)
-        val part = PartFile.openOrCreate(destination, first.session.transferId, first.size, DEFAULT_CHUNK_SIZE)
-        activePulls[first.session.transferId] = ActivePull(part, streams, remotePath, peerControlEndpoint)
-        try {
-            transferEngine.pull(part, streams) { negotiatePull(peerControlEndpoint, remotePath, streams).session }
-        } finally {
-            activePulls.remove(first.session.transferId)
+        val transferId = first.session.transferId
+        val part = PartFile.openOrCreate(destination, transferId, first.size, DEFAULT_CHUNK_SIZE)
+        // Claim the same in-flight slot resumeActivePulls() checks, *before* publishing into
+        // activePulls: this is the primary writer for this PartFile, so a network change landing
+        // mid-pull must dedup against it rather than spawning a second concurrent pull loop over
+        // the same file. The claim is taken first so a resume can never observe the activePulls
+        // entry without also observing the claim.
+        withPullClaim(transferId) {
+            activePulls[transferId] = ActivePull(part, streams, remotePath, peerControlEndpoint)
+            try {
+                transferEngine.pull(part, streams) { negotiatePull(peerControlEndpoint, remotePath, streams).session }
+            } finally {
+                activePulls.remove(transferId)
+            }
         }
         return part
     }

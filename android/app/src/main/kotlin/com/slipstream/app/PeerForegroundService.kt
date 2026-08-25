@@ -37,7 +37,8 @@ class PeerForegroundService : Service() {
         app.peer.start()
 
         connectivityManager = getSystemService(ConnectivityManager::class.java)
-        connectivityManager.registerNetworkCallback(networkRequest(), buildNetworkCallback(app))
+        val callback = buildNetworkCallback(connectivityManager) { app.peer.onNetworkChanged(it) }
+        connectivityManager.registerNetworkCallback(networkRequest(), callback)
     }
 
     /**
@@ -57,15 +58,40 @@ class PeerForegroundService : Service() {
             .addTransportType(NetworkCapabilities.TRANSPORT_ETHERNET)
             .build()
 
-    private fun buildNetworkCallback(app: SlipstreamApplication): ConnectivityManager.NetworkCallback {
+    /**
+     * The transport filter in [networkRequest] only constrains which networks are *reported* to
+     * this callback - it says nothing about [ConnectivityManager.getActiveNetwork], which on a
+     * phone with mobile data is very often the cellular network the moment Wi-Fi drops. Handing
+     * that straight to `onNetworkChanged` would bind every subsequent socket to cellular, which
+     * is precisely what spec §11 layer 3 forbids. So the active network is re-checked against
+     * the same rules the request applies, and anything that does not qualify becomes `null` -
+     * an explicit "no local network", which [com.slipstream.core.SlipstreamPeer] already handles.
+     */
+    internal fun qualifiesAsLocalNetwork(cm: ConnectivityManager, network: Network?): Boolean {
+        val capabilities = cm.getNetworkCapabilities(network ?: return false) ?: return false
+        if (!capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)) return false
+        return capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
+            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
+    }
+
+    /** Internal so a test can drive the real callback (notably [onLost]) without a live service. */
+    internal fun buildNetworkCallback(
+        cm: ConnectivityManager,
+        onNetworkChanged: (Network?) -> Unit,
+    ): ConnectivityManager.NetworkCallback {
         // SlipstreamPeer.onNetworkChanged serializes these (they arrive concurrently on the
         // framework's own threads) and ignores a repeat of the network it is already on, which
         // is what keeps the routine onCapabilitiesChanged storm from restarting the servers.
         val callback = object : ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: Network) = app.peer.onNetworkChanged(network)
-            override fun onLost(network: Network) = app.peer.onNetworkChanged(connectivityManager.activeNetwork)
+            override fun onAvailable(network: Network) = onNetworkChanged(network)
+
+            override fun onLost(network: Network) {
+                val active = cm.activeNetwork
+                onNetworkChanged(if (qualifiesAsLocalNetwork(cm, active)) active else null)
+            }
+
             override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) =
-                app.peer.onNetworkChanged(network)
+                onNetworkChanged(network)
         }
         networkCallback = callback
         return callback

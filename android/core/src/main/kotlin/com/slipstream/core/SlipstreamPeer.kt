@@ -24,7 +24,9 @@ import java.io.File
 import java.net.InetSocketAddress
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.thread
+import kotlin.concurrent.withLock
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -44,11 +46,12 @@ private const val DEFAULT_CHUNK_SIZE = 256 * 1024
  * bound to the (possibly new) active [android.net.Network], so traffic cannot silently route
  * over a different network path (e.g. cellular) even if one exists.
  *
- * Server-side (listening) sockets get their network-scoping a different way: they bind to the
- * specific local address [NetworkInfo.current] reports for the active network (never the
- * wildcard address) rather than via [android.net.Network.bindSocket], which Android does not
- * support for [java.net.ServerSocket]. Binding to that address is itself sufficient scoping
- * for inbound connections, since nothing outside that network can reach it.
+ * Server-side (listening) sockets get their network-scoping a different way: all three
+ * ([ControlServer], [BulkServer], [MediaServer]) bind to the specific local address
+ * [NetworkInfo.current] reports for the active network (never the wildcard address) rather than
+ * via [android.net.Network.bindSocket], which Android does not support for
+ * [java.net.ServerSocket]. Each of them additionally applies [com.slipstream.core.net.LanGuard]
+ * to every accepted connection's remote address (spec §11 layer 2) before reading a byte.
  */
 class SlipstreamPeer(
     val identity: DeviceIdentity,
@@ -58,6 +61,11 @@ class SlipstreamPeer(
     private val clipboardSink: ClipboardSink,
     private val discoveryCoordinatorFactory: () -> DiscoveryCoordinator,
     private val networkBinder: MutableNetworkBinder = MutableNetworkBinder(),
+    /** Listen ports. Overridable (with 0 = "any free port") so tests can start real servers
+     * without colliding with a device's fixed Slipstream ports or with each other. */
+    private val controlPort: Int = SlipstreamPorts.CONTROL,
+    private val bulkPort: Int = SlipstreamPorts.BULK,
+    private val mediaPort: Int = SlipstreamPorts.MEDIA,
     /** Lifecycle hooks fired during [onNetworkChanged], mainly so callers (including tests)
      * can observe the tear-down / re-discovery / resume sequence without reaching into
      * private state. Production use is expected too, e.g. surfacing status to the UI. */
@@ -74,6 +82,24 @@ class SlipstreamPeer(
     private var mediaServer: MediaServer? = null
 
     private val transferEngine get() = TransferEngine(networkBinder)
+
+    /** Serializes [onNetworkChanged]; see its doc. */
+    private val networkChangeLock = ReentrantLock()
+
+    /** The network [onNetworkChanged] last acted on, and whether it has ever acted at all -
+     * the latter is needed because `null` (no network) is itself a meaningful applied state
+     * that must be distinguishable from "nothing applied yet". */
+    private var appliedNetwork: android.net.Network? = null
+    private var hasAppliedNetwork = false
+
+    /** Transfer ids with a resume thread currently running; see [resumeActivePulls]. */
+    private val resumeInFlight = ConcurrentHashMap<UUID, Unit>()
+
+    /** How many of the three listening servers are currently up. Exists so a test can assert
+     * that a storm of overlapping network changes leaves exactly one live set behind, rather
+     * than a torn-down-and-never-restarted peer or a pile of orphans. */
+    internal val runningServerCount: Int
+        get() = listOfNotNull(controlServer, bulkServer, mediaServer).size
 
     /** Pulls currently in flight, keyed by transfer id, so a network change can resume them
      * from their on-disk bitmap rather than starting over. `internal` (rather than private) so
@@ -97,15 +123,24 @@ class SlipstreamPeer(
     }
 
     private fun startServers() {
-        val server = ControlServer(identity, peerStore, networkInfo)
+        // Spec §11 layer 1: every listening socket binds to this network's own address, never
+        // the wildcard. ControlServer derives it itself (and throws if there is none); the bulk
+        // and media servers take it explicitly, from the same source.
+        val bindAddress = requireNotNull(networkInfo.current()) {
+            "No local network available to bind Slipstream's servers to"
+        }.localAddress
+
+        val server = ControlServer(identity, peerStore, networkInfo, port = controlPort)
         server.onPeerConnected = { conn -> thread(isDaemon = true) { serveConnection(conn) } }
         controlServer = server
 
         bulkServer = BulkServer(
             bulkTokenVault,
             fileForTransfer = { id -> sourceFileForTransfer[id] },
+            port = bulkPort,
+            bindAddress = bindAddress,
         )
-        mediaServer = MediaServer(mediaTokenVault)
+        mediaServer = MediaServer(mediaTokenVault, port = mediaPort, bindAddress = bindAddress)
     }
 
     // Source files this device is serving out via bulk (i.e. this device is the sender for
@@ -118,11 +153,11 @@ class SlipstreamPeer(
         rootDirectory = rootDirectory,
         bulkTokenVault = bulkTokenVault,
         bulkEndpoint = {
-            val port = bulkServer?.boundPort ?: SlipstreamPorts.BULK
+            val port = bulkServer?.boundPort ?: bulkPort
             InetSocketAddress(requireNotNull(networkInfo.current()) { "no active network" }.localAddress, port)
         },
         mediaTokenVault = mediaTokenVault,
-        mediaPort = { mediaServer?.boundPort ?: SlipstreamPorts.MEDIA },
+        mediaPort = { mediaServer?.boundPort ?: mediaPort },
         clipboardSink = clipboardSink,
         onBulkIssued = { transferId, file -> sourceFileForTransfer[transferId] = file },
     )
@@ -154,33 +189,80 @@ class SlipstreamPeer(
      * address and resumes any in-flight pulls from where their bitmap left off.
      */
     fun onNetworkChanged(network: android.net.Network?) {
-        networkBinder.network = network
-        teardown()
-        if (network != null && networkInfo.current() != null) {
-            startServers()
-        }
-        thread(isDaemon = true) {
-            val result = try {
-                kotlinx.coroutines.runBlocking { discover() }
+        // ConnectivityManager delivers onAvailable/onCapabilitiesChanged/onLost concurrently on
+        // its own threads, and they routinely overlap. Without this lock two events can
+        // interleave a teardown against a restart - orphaning one set of accept threads on
+        // still-bound ports and making the *other* set's bind fail - so they are serialized:
+        // a second event queues behind the first rather than racing it.
+        networkChangeLock.withLock {
+            // Layer-4-of-none, but just as important for behaviour: onCapabilitiesChanged fires
+            // routinely (validation completing, signal or bandwidth changes) for a network that
+            // has not actually changed. Restarting the servers for one of those would kill every
+            // in-flight inbound transfer and live control session for no reason at all.
+            if (hasAppliedNetwork && network == appliedNetwork) return
+            hasAppliedNetwork = true
+            appliedNetwork = network
+
+            networkBinder.network = network
+
+            // A failure here (e.g. networkInfo.current() racing to null, or the previous
+            // listen socket not yet fully released) must never propagate: this runs on a
+            // framework NetworkCallback thread, where an escaping exception takes the whole
+            // foreground service down on a routine Wi-Fi transition.
+            try {
+                teardown()
+                if (network != null && networkInfo.current() != null) {
+                    startServers()
+                }
             } catch (e: Exception) {
-                null
+                // Leave the peer in the cleanly-torn-down state; the next network event (or an
+                // explicit start()) restarts it.
+                closeServers()
             }
-            onRediscover(result)
+
+            thread(isDaemon = true) {
+                val result = try {
+                    kotlinx.coroutines.runBlocking { discover() }
+                } catch (e: Exception) {
+                    null
+                }
+                onRediscover(result)
+            }
+            resumeActivePulls()
         }
-        resumeActivePulls()
+    }
+
+    /** Closes every listening server and forgets it. Safe to call twice, and safe to call on a
+     * partially-started set (which is exactly what a failed [startServers] leaves behind). */
+    private fun closeServers() {
+        try { controlServer?.close() } catch (_: Exception) {}
+        controlServer = null
+        try { bulkServer?.close() } catch (_: Exception) {}
+        bulkServer = null
+        try { mediaServer?.close() } catch (_: Exception) {}
+        mediaServer = null
     }
 
     private fun teardown() {
-        controlServer?.close(); controlServer = null
-        bulkServer?.close(); bulkServer = null
-        mediaServer?.close(); mediaServer = null
+        closeServers()
         onTeardown()
     }
 
-    private fun resumeActivePulls() {
+    /**
+     * Restarts every incomplete pull that was in flight. Internal (not private) so a test can
+     * drive two overlapping resume passes directly.
+     *
+     * Each transfer id is claimed in [resumeInFlight] *before* its thread is spawned, so two
+     * network events in quick succession cannot end up with two [TransferEngine.pull] loops
+     * writing the same [PartFile] concurrently - which would interleave chunk writes and
+     * corrupt it.
+     */
+    internal fun resumeActivePulls() {
         activePulls.values.toList().forEach { pull ->
+            val transferId = pull.part.transferId
             if (pull.part.complete()) return@forEach
-            onResumeAttempt(pull.part.transferId)
+            if (resumeInFlight.putIfAbsent(transferId, Unit) != null) return@forEach
+            onResumeAttempt(transferId)
             thread(isDaemon = true) {
                 try {
                     transferEngine.pull(pull.part, pull.streams) {
@@ -188,6 +270,8 @@ class SlipstreamPeer(
                     }
                 } catch (e: Exception) {
                     // Best-effort resume; the caller can retry pullFile() explicitly later.
+                } finally {
+                    resumeInFlight.remove(transferId)
                 }
             }
         }
@@ -238,6 +322,7 @@ class SlipstreamPeer(
     }
 
     override fun close() {
-        teardown()
+        // Same lock as onNetworkChanged, so close() cannot land halfway through a restart.
+        networkChangeLock.withLock { teardown() }
     }
 }

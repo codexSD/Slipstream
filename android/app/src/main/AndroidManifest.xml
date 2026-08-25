@@ -7,9 +7,13 @@
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
 
-    <!-- Foreground service hosting SlipstreamPeer while the app is backgrounded. -->
+    <!-- Foreground service hosting SlipstreamPeer while the app is backgrounded.
+         Type is connectedDevice, not dataSync: the service exists to stay reachable from one
+         specific paired companion device, and - unlike dataSync - connectedDevice is one of the
+         foreground-service types a BOOT_COMPLETED receiver is still permitted to start on
+         API 34+, which is exactly what BootReceiver does. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!-- Restart the peer service after device boot. -->
@@ -38,7 +42,7 @@
         <service
             android:name=".PeerForegroundService"
             android:exported="false"
-            android:foregroundServiceType="dataSync" />
+            android:foregroundServiceType="connectedDevice" />
 
         <receiver
             android:name=".BootReceiver"

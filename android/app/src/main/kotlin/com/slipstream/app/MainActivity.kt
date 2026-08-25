@@ -2,6 +2,7 @@ package com.slipstream.app
 
 import android.app.Activity
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -22,7 +23,21 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
 
         ContextCompat.startForegroundService(this, Intent(this, PeerForegroundService::class.java))
+        maybeRequestNotificationPermission()
         maybeRequestBatteryOptimizationExemption()
+    }
+
+    /**
+     * On API 33+ `POST_NOTIFICATIONS` is a runtime permission, and without it the foreground
+     * service's ongoing notification is silently suppressed - the service still runs, but the
+     * user has no visible indication of it, which is both a poor experience and (for a
+     * persistent background service) something the platform expects to be surfaced.
+     * Declaring it in the manifest alone is not enough; it has to be asked for here.
+     */
+    internal fun maybeRequestNotificationPermission() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        if (checkSelfPermission(POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) return
+        requestPermissions(arrayOf(POST_NOTIFICATIONS), REQUEST_POST_NOTIFICATIONS)
     }
 
     private fun maybeRequestBatteryOptimizationExemption() {
@@ -48,8 +63,10 @@ class MainActivity : Activity() {
         }
     }
 
-    private companion object {
+    internal companion object {
         const val PREFS_NAME = "slipstream"
         const val KEY_ASKED = "asked_battery_optimization_exemption"
+        const val POST_NOTIFICATIONS = "android.permission.POST_NOTIFICATIONS"
+        const val REQUEST_POST_NOTIFICATIONS = 1
     }
 }

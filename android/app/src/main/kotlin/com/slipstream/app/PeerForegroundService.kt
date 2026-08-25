@@ -37,10 +37,30 @@ class PeerForegroundService : Service() {
         app.peer.start()
 
         connectivityManager = getSystemService(ConnectivityManager::class.java)
-        val request = NetworkRequest.Builder()
+        connectivityManager.registerNetworkCallback(networkRequest(), buildNetworkCallback(app))
+    }
+
+    /**
+     * Ethernet as well as Wi-Fi: a tablet in a USB/Ethernet dock, or a device on a wired LAN
+     * alongside the PC that hosts the hotspot (design.md's PC-hosts-hotspot scenario), is a
+     * perfectly ordinary Slipstream setup, and with a Wi-Fi-only filter it would never receive
+     * a single network callback - so the peer would never start discovery at all.
+     *
+     * The filter is not dropped entirely: without it, a cellular network becoming available
+     * would be reported here and bound to, which is the one thing spec §11 layer 3 exists to
+     * prevent. VPNs are excluded for the same reason.
+     */
+    internal fun networkRequest(): NetworkRequest =
+        NetworkRequest.Builder()
             .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
             .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+            .addTransportType(NetworkCapabilities.TRANSPORT_ETHERNET)
             .build()
+
+    private fun buildNetworkCallback(app: SlipstreamApplication): ConnectivityManager.NetworkCallback {
+        // SlipstreamPeer.onNetworkChanged serializes these (they arrive concurrently on the
+        // framework's own threads) and ignores a repeat of the network it is already on, which
+        // is what keeps the routine onCapabilitiesChanged storm from restarting the servers.
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) = app.peer.onNetworkChanged(network)
             override fun onLost(network: Network) = app.peer.onNetworkChanged(connectivityManager.activeNetwork)
@@ -48,7 +68,7 @@ class PeerForegroundService : Service() {
                 app.peer.onNetworkChanged(network)
         }
         networkCallback = callback
-        connectivityManager.registerNetworkCallback(request, callback)
+        return callback
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {

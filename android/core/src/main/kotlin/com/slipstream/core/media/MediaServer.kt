@@ -1,11 +1,14 @@
 package com.slipstream.core.media
 
 import com.slipstream.core.SlipstreamPorts
+import com.slipstream.core.net.LanGuard
 import java.io.BufferedOutputStream
 import java.io.File
 import java.io.InputStream
 import java.io.OutputStream
 import java.io.RandomAccessFile
+import java.net.InetAddress
+import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.nio.charset.StandardCharsets
@@ -25,6 +28,10 @@ import kotlin.concurrent.thread
  * memory.
  */
 data class MediaToken(val value: UUID, val file: File, val mime: String, val expiresAtMs: Long)
+
+/** Matches [ServerSocket]'s own default backlog; only spelled out because binding to a
+ * specific address requires the three-argument constructor. */
+private const val ACCEPT_BACKLOG = 50
 
 /** Issues and validates [MediaToken]s. Thread-safe. Not single-use - a playback session and a
  * seek within it both reuse the same token, and it may back multiple concurrent Range requests. */
@@ -66,14 +73,31 @@ class MediaTokenVault(private val nowMs: () -> Long = System::currentTimeMillis)
  * [SlipstreamPorts.MEDIA], per design.md §8-9: whole-file `200` with `Accept-Ranges: bytes`,
  * single-range `Range` requests answered `206` with `Content-Range`, and unsatisfiable ranges
  * answered `416`. Every URL path is `/media/<token>`; an unknown or expired token is `404`.
+ *
+ * Spec §11 layer 1: the listening socket is bound to [bindAddress] - the active network's own
+ * local address in production - never the wildcard `0.0.0.0`, so this plaintext HTTP endpoint is
+ * not reachable from any other interface. The default is loopback rather than the wildcard so a
+ * caller which forgets to supply an address fails closed, not open.
+ *
+ * Spec §11 layer 2: every accepted connection's remote address is checked against [LanGuard]
+ * before its request line is read; a non-local peer is dropped with no reply at all (not even a
+ * 404), matching how the bulk server treats an invalid header.
  */
 class MediaServer(
     private val tokenVault: MediaTokenVault,
     port: Int = SlipstreamPorts.MEDIA,
+    bindAddress: InetAddress = InetAddress.getLoopbackAddress(),
+    /** The layer-2 predicate. Overridable only so a test can drive the rejection path - a
+     * loopback client is always local, so there is no other way to observe it. */
+    private val isLocalAddress: (InetAddress) -> Boolean = LanGuard::isLocal,
 ) : AutoCloseable {
 
-    private val serverSocket = ServerSocket(port)
+    private val serverSocket = ServerSocket(port, ACCEPT_BACKLOG, bindAddress)
     val boundPort: Int get() = serverSocket.localPort
+
+    /** The actual address+port this server listens on - never the wildcard address. */
+    val listenEndpoint: InetSocketAddress
+        get() = InetSocketAddress(serverSocket.inetAddress, serverSocket.localPort)
 
     private val executor: ExecutorService = Executors.newCachedThreadPool()
     @Volatile private var running = true
@@ -94,6 +118,8 @@ class MediaServer(
     private fun handleConnection(socket: Socket) {
         socket.use {
             try {
+                // Layer 2: refuse a non-local peer before reading (or writing) anything.
+                if (!isLocalAddress(socket.inetAddress)) return
                 val input = socket.getInputStream()
                 val output = BufferedOutputStream(socket.getOutputStream())
                 val request = readRequest(input) ?: return

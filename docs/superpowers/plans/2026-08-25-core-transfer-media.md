@@ -4214,9 +4214,10 @@ git commit -m "feat: launch streams through a playlist handler, not the browser"
 - Consumes: everything above, plus Plan 1's `ControlConnection` and `ControlMessage`.
 - Produces:
   - Payload records: `ListRequest(string Path, string? Sort)`, `ListResponse(string Path, IReadOnlyList<FileEntry> Entries, bool Truncated)`, `StatRequest(string Path)`, `PullRequest(string Path)`, `PullResponse(string TransferId, string Token, long Size, int ChunkSize, int Streams, string Name)`, `PlayMessage(string Url, string Title, string? Mime)`, `ClipboardMessage(string Text)`
-  - `sealed class SlipstreamSession { SlipstreamSession(FileBrowser browser, TokenVault vault, MediaServer media, ThumbnailProvider thumbnails, PlaylistLauncher launcher, IPAddress advertisedAddress, int streamCount); Task<ControlMessage?> HandleAsync(ControlMessage message, CancellationToken ct); string? LastClipboardText { get; } }`
+  - `sealed class SlipstreamSession { SlipstreamSession(DeviceIdentity identity, FileBrowser browser, TokenVault vault, MediaServer media, ThumbnailProvider thumbnails, PlaylistLauncher launcher, IPAddress advertisedAddress, int streamCount); Task<ControlMessage?> HandleAsync(ControlMessage message, CancellationToken ct); string? LastClipboardText { get; } }`
   - `HandleAsync` returns `null` for messages it does not recognise — the Global Constraint that unknown types are ignored.
   - `const int ClipboardMaxBytes = 65_536`.
+  - **`hello` must be handled here.** Plan 1's harness answered `hello` inline in its own `PeerConnected` handler. Once this session owns the connection (Task 16), that handler is replaced — so without a `hello` case the handshake silently stops being answered, with no error anywhere. `HelloPayload` already exists in `ControlServer.cs`; do not redeclare it.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -4240,6 +4241,7 @@ public class SlipstreamSessionTests : IAsyncLifetime
     private readonly TokenVault _vault = new();
 
     private MediaServer _media = null!;
+    private DeviceIdentity _identity = null!;
     private SlipstreamSession _session = null!;
 
     public Task InitializeAsync()
@@ -4250,8 +4252,10 @@ public class SlipstreamSessionTests : IAsyncLifetime
         _media = new MediaServer(_vault, IPAddress.Loopback, port: 0);
         _ = _media.RunAsync(_cts.Token);
 
+        _identity = DeviceIdentity.CreateNew("Test PC");
+
         _session = new SlipstreamSession(
-            new FileBrowser(), _vault, _media,
+            _identity, new FileBrowser(), _vault, _media,
             new ThumbnailProvider(Path.Combine(_dir, "thumbs"), _vault),
             new PlaylistLauncher(Path.Combine(_dir, "temp")) { HasPlaylistHandler = () => true },
             IPAddress.Loopback, streamCount: 4);
@@ -4363,6 +4367,25 @@ public class SlipstreamSessionTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Hello_is_answered_with_this_devices_identity()
+    {
+        // Plan 1's harness answered hello inline. Once the session owns the
+        // connection, this case is the only thing keeping the handshake alive.
+        var reply = await _session.HandleAsync(
+            ControlMessage.Request("hello", "0", new HelloPayload(
+                SlipstreamPorts.ProtocolVersion, "peer-device", "Test Phone", "deadbeef")),
+            _cts.Token);
+
+        Assert.Equal("hello.ok", reply!.Type);
+        Assert.Equal("0", reply.Id);
+
+        var payload = reply.PayloadAs<HelloPayload>()!;
+        Assert.Equal(SlipstreamPorts.ProtocolVersion, payload.Version);
+        Assert.Equal(_identity.DeviceId, payload.DeviceId);
+        Assert.Equal(_identity.Fingerprint, payload.Fingerprint);
+    }
+
+    [Fact]
     public async Task Ping_is_answered_with_pong()
     {
         var reply = await _session.HandleAsync(ControlMessage.Request("ping", "7"), _cts.Token);
@@ -4413,6 +4436,7 @@ public sealed record ErrorResponse(string Message);
 /// </summary>
 [SupportedOSPlatform("windows")]
 public sealed class SlipstreamSession(
+    DeviceIdentity identity,
     FileBrowser browser,
     TokenVault vault,
     MediaServer media,
@@ -4431,6 +4455,7 @@ public sealed class SlipstreamSession(
 
     private ControlMessage? Dispatch(ControlMessage message) => message.Type switch
     {
+        "hello" => HandleHello(message),
         "ping" => ControlMessage.Response("pong", message.Id!),
         "list" => HandleList(message),
         "stat" => HandleStat(message),
@@ -4440,6 +4465,17 @@ public sealed class SlipstreamSession(
         "clipboard" => HandleClipboard(message),
         _ => null, // A peer on a newer protocol version degrades, it does not break.
     };
+
+    /// <summary>
+    /// Version negotiation and device info. `HelloPayload` is declared in
+    /// `ControlServer.cs` (Plan 1) — do not redeclare it here.
+    /// </summary>
+    private ControlMessage HandleHello(ControlMessage message) =>
+        ControlMessage.Response("hello.ok", message.Id ?? "0", new HelloPayload(
+            SlipstreamPorts.ProtocolVersion,
+            identity.DeviceId,
+            identity.DisplayName,
+            identity.Fingerprint));
 
     private ControlMessage HandleList(ControlMessage message)
     {
@@ -4544,12 +4580,14 @@ public sealed record PlayMessage(string Url, string Title, string? Mime);
 public sealed record ClipboardMessage(string Text);
 ```
 
+Add `using Slipstream.Core.Identity;` for `DeviceIdentity`.
+
 Every error string follows spec §15: direct, no apology, names what happened.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `dotnet test windows/Slipstream.sln --filter SlipstreamSessionTests`
-Expected: PASS, 10 tests.
+Expected: PASS, 11 tests.
 
 - [ ] **Step 5: Commit**
 
@@ -4865,7 +4903,7 @@ var thumbnails = new ThumbnailProvider(Path.Combine(_stateDirectory, "thumbnails
 _mediaServer.ThumbnailResolver = thumbnails.Resolve;
 
 var session = new SlipstreamSession(
-    new FileBrowser(), Tokens, _mediaServer, thumbnails,
+    Identity, new FileBrowser(), Tokens, _mediaServer, thumbnails,
     new PlaylistLauncher(Path.Combine(Path.GetTempPath(), "slipstream")),
     bind, StreamCount);
 
@@ -5067,6 +5105,7 @@ git commit -m "feat: wire transfer engine, media, and thumbnails into the peer"
 |---|---|
 | §6 `list` / `stat`, 5000 cap + truncated flag | 11, 15 |
 | §6 `pull.request` / `pull.ok`, bulk token | 4, 15 |
+| §6 `hello` / `hello.ok` still answered once the session owns the connection | 15 |
 | §6 unknown types ignored | 15 |
 | §7 purpose-built framing, not HTTP | 1, 2 |
 | §7 64-byte header, big-endian | 1, 2 |

@@ -87,4 +87,33 @@ public class StateViewTests
 
         Assert.True(errorVisualState is not null, "MeridianStateView default style must declare an Error VisualState.");
     }
+
+    [Fact]
+    public void Action_button_default_tap_target_is_at_least_44px()
+    {
+        var doc = LoadGeneric();
+
+        var stateViewStyle = doc.Descendants()
+            .Where(e => e.Name.LocalName == "Style")
+            .FirstOrDefault(e => (e.Attribute("TargetType")?.Value ?? "").EndsWith("MeridianStateView"));
+
+        Assert.True(stateViewStyle is not null, "No default Style with TargetType MeridianStateView found in Generic.xaml");
+
+        var actionButton = stateViewStyle!.Descendants()
+            .Where(e => e.Name.LocalName == "Button")
+            .FirstOrDefault(e => (e.Attribute("Content")?.Value ?? "").Contains("ActionLabel"));
+
+        Assert.True(actionButton is not null,
+            "MeridianStateView default template must declare the ActionLabel/ActionCommand Button.");
+
+        var minWidth = actionButton!.Attribute("MinWidth")?.Value;
+        Assert.True(minWidth is not null, "MeridianStateView action Button is missing MinWidth");
+        Assert.True(double.Parse(minWidth!) >= 44,
+            "MeridianStateView action Button MinWidth must be >= 44 to satisfy the tap-target constraint");
+
+        var minHeight = actionButton.Attribute("MinHeight")?.Value;
+        Assert.True(minHeight is not null, "MeridianStateView action Button is missing MinHeight");
+        Assert.True(double.Parse(minHeight!) >= 44,
+            "MeridianStateView action Button MinHeight must be >= 44 to satisfy the tap-target constraint");
+    }
 }

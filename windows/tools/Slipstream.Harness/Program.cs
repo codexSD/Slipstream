@@ -172,9 +172,49 @@ switch (command)
         break;
     }
 
+    case "pair-mode":
+    {
+        // pair-mode <state> — opens a 120s window and pairs with whoever answers.
+        await using var peer = new SlipstreamPeer(stateDir, Environment.MachineName);
+        peer.StartAsync(cts.Token).ContinueWith(_ => { }, TaskScheduler.Default).Forget();
+        await Task.Delay(300, cts.Token);
+
+        Console.WriteLine($"This device: {peer.Identity.DisplayName}  {peer.Identity.Fingerprint[..16]}…");
+        Console.WriteLine("Pairing window open for 120 seconds. Run 'pair-mode' on the other device too.");
+
+        var result = await peer.PairAsync(
+            confirmCode: (code, _) =>
+            {
+                Console.WriteLine();
+                Console.WriteLine($"    Pairing code:  {code}");
+                Console.WriteLine();
+                Console.Write("Does this match the code on the other device? [y/N] ");
+                var answer = Console.ReadLine();
+                return Task.FromResult(answer?.Trim().Equals("y", StringComparison.OrdinalIgnoreCase) == true);
+            },
+            timeout: TimeSpan.FromSeconds(120),
+            cts.Token);
+
+        Console.WriteLine(result is null
+            ? "Pairing did not complete."
+            : $"Paired with {result.DisplayName}.");
+
+        return result is null ? 1 : 0;
+    }
+
+    case "paired":
+    {
+        var peer = new SlipstreamPeer(stateDir, Environment.MachineName);
+        Console.WriteLine(peer.Peers.Current is { } current
+            ? $"Paired with {current.DisplayName} ({current.DeviceId}) since {current.PairedAt:u}"
+            : "Not paired.");
+        break;
+    }
+
     default:
         Console.WriteLine("Commands: identity <state> | pair <state> <id> <name> <fingerprint> | serve <state> | find <state> | " +
-                           "pull <state> <remotePath> | stream <state> <remotePath> | send-text <state> <text>");
+                           "pull <state> <remotePath> | stream <state> <remotePath> | send-text <state> <text> | " +
+                           "pair-mode <state> | paired <state>");
         break;
 }
 

@@ -62,24 +62,21 @@ not a shortcut.
 
 ## Scope gaps carried forward, not closed in this branch
 
-### `protocol.md` lives at `protocol/protocol.md`, not `docs/protocol.md`
+### `protocol.md` lives at `protocol/protocol.md`, not `docs/protocol.md` — CLOSED
 
-The design spec's §18 repository-structure table places the extracted wire spec at
-`docs/protocol.md`. The plan's own File Structure section (and the delivered layout) puts it at
-top-level `protocol/protocol.md`, alongside `protocol/vectors/`. Functionally harmless — just a
-documentation/spec inconsistency. Whoever next touches the spec doc should either move the file or
-correct §18's path.
+Closed by [`2026-08-25-pairing-bootstrap.md`](2026-08-25-pairing-bootstrap.md) (Plan 1b), Task 7.
+Spec §18's repository-structure table now points at `protocol/protocol.md`, matching the delivered
+layout, and lists `protocol/pairing.md` alongside it.
 
-### No code path yet bootstraps a first pairing
+### No code path yet bootstraps a first pairing — CLOSED
 
-`pair.offer`/`pair.confirm` message types are declared (`ControlServer.cs`) but never constructed
-or handled. `ControlServer.HandleAsync` drops any inbound connection whose fingerprint isn't
-already trusted before reading a single message, and `ControlClient.ConnectAsync` refuses to
-connect at all unless already paired. This matches the plan's own Task 16 scope (its test
-`Server_drops_a_connection_from_an_untrusted_fingerprint` explicitly asserts this behavior) — the
-pairing UX (displaying/confirming the six-digit code, wiring the offer/confirm messages) is
-reserved for a later plan. Noted here so it isn't mistaken for an oversight: as delivered, two
-never-paired devices cannot yet complete pairing over this code.
+Closed by [`2026-08-25-pairing-bootstrap.md`](2026-08-25-pairing-bootstrap.md) (Plan 1b). A
+time-boxed pairing window (`PairingWindow`), a restricted accept path on `ControlServer`, an
+unpinned pairing connect (`ControlClient.ConnectForPairingAsync`), unpaired-peer discovery
+(`PairingDiscovery`), and a mutual-confirmation state machine (`PairingSession` /
+`PairingCoordinator`) now let two never-paired devices find each other, derive and compare a
+six-digit code, and reach a persisted trusted state on both sides. See
+[`protocol/pairing.md`](../../../protocol/pairing.md) for the wire spec.
 
 ### Cross-machine discovery-matrix verification not performed
 

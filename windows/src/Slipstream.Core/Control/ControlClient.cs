@@ -66,4 +66,44 @@ public sealed class ControlClient(DeviceIdentity identity, PairedPeerStore peers
             throw;
         }
     }
+
+    /// <summary>
+    /// Connects for pairing: TLS, but the certificate is not pinned — there is nothing to
+    /// pin against until pairing completes. The resulting <see cref="ControlConnection.PeerFingerprint"/>
+    /// is the peer's real certificate fingerprint and is what the six-digit code is derived
+    /// from. LanGuard still applies; plaintext pairing is never permitted.
+    /// </summary>
+    public async Task<ControlConnection?> ConnectForPairingAsync(
+        IPEndPoint endpoint,
+        TimeSpan timeout,
+        CancellationToken cancellationToken)
+    {
+        LanGuard.EnsureLocal(endpoint.Address);
+
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        linked.CancelAfter(timeout);
+
+        var tcp = new TcpClient();
+        try
+        {
+            tcp.NoDelay = true;
+            await tcp.ConnectAsync(endpoint, linked.Token);
+
+            var stream = await PinnedTls.AuthenticateAsClientAsync(
+                tcp.GetStream(), identity, acceptFingerprint: _ => true, linked.Token);
+
+            return new ControlConnection(stream, PinnedTls.FingerprintOf(stream), endpoint);
+        }
+        catch (NonLocalAddressException)
+        {
+            tcp.Dispose();
+            throw;
+        }
+        catch
+        {
+            // Unreachable, refused, or the peer closed the window. Not an error here.
+            tcp.Dispose();
+            return null;
+        }
+    }
 }

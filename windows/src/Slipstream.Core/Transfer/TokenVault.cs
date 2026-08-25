@@ -11,7 +11,14 @@ namespace Slipstream.Core.Transfer;
 public sealed class TokenVault(TimeProvider? time = null)
 {
     private static readonly TimeSpan MediaLifetime = TimeSpan.FromHours(12);
-    private static readonly TimeSpan BulkLifetime = TimeSpan.FromHours(24);
+
+    // Spec §7. Scoped to one transfer id and one file path, minted over TLS to an
+    // already-paired peer. The former per-stream use counter was removed: the client
+    // cannot know its range count until after it holds the token, so the server could
+    // not size the budget, and a fragmented resume legitimately needs more connections
+    // than there are streams. A tighter expiry replaces it — a stricter bound than the
+    // counter ever was, and one that does not break a correct client.
+    private static readonly TimeSpan BulkLifetime = TimeSpan.FromMinutes(5);
 
     private readonly TimeProvider _time = time ?? TimeProvider.System;
     private readonly ConcurrentDictionary<Guid, Entry> _entries = new();
@@ -27,7 +34,8 @@ public sealed class TokenVault(TimeProvider? time = null)
         var token = new TransferToken(
             NewToken(), transferId, path, size, _time.GetUtcNow() + BulkLifetime);
 
-        _entries[token.Value] = new Entry(token, Math.Max(1, expectedStreams));
+        _ = expectedStreams; // retained for call-site compatibility; no longer a budget
+        _entries[token.Value] = new Entry(token, int.MaxValue);
         return token;
     }
 

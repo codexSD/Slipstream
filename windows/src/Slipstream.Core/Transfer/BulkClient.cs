@@ -55,8 +55,23 @@ public sealed class BulkClient
             progress.Report(new TransferProgress(transferId, total, part.Size, rate));
         }
 
-        await Task.WhenAll(ranges.Select((range, index) =>
-            PullRangeAsync(endpoint, transferId, token, part, range, (ushort)index, Report, cancellationToken)));
+        // A fragmented bitmap can yield more ranges than streams. Process them all, but
+        // never hold more than `streams` sockets open at once.
+        using var slots = new SemaphoreSlim(streams);
+
+        await Task.WhenAll(ranges.Select(async (range, index) =>
+        {
+            await slots.WaitAsync(cancellationToken);
+            try
+            {
+                await PullRangeAsync(
+                    endpoint, transferId, token, part, range, (ushort)index, Report, cancellationToken);
+            }
+            finally
+            {
+                slots.Release();
+            }
+        }));
 
         progress?.Report(new TransferProgress(
             transferId, Interlocked.Read(ref completed), part.Size,

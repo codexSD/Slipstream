@@ -90,7 +90,7 @@ class ControlServer(
             val trusted = peerStore.peer?.fingerprint
 
             if (fingerprint != null && trusted != null && fingerprint == trusted) {
-                onPeerConnected?.invoke(ControlConnection(socket))
+                onPeerConnected?.invoke(ControlConnection(socket, fingerprint))
                 return
             }
 
@@ -98,7 +98,7 @@ class ControlServer(
             // window is open right now - otherwise this must be byte-for-byte identical to
             // normal operation: dropped before a single message is read.
             if (pairingWindow.isOpen) {
-                onPairingConnected?.invoke(ControlConnection(socket))
+                onPairingConnected?.invoke(ControlConnection(socket, fingerprint))
                 return
             }
 

@@ -6,6 +6,7 @@ import com.slipstream.core.identity.PairedPeerStore
 import com.slipstream.core.net.LocalNetwork
 import com.slipstream.core.net.NetworkInfo
 import com.slipstream.core.net.NonLocalAddressException
+import com.slipstream.core.pairing.PairingWindow
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
@@ -138,6 +139,66 @@ class ControlChannelTest {
 
             assertTrue(latch.await(5, TimeUnit.SECONDS))
             assertEquals("hello", received.get()?.type)
+            conn.close()
+        } finally {
+            server.close()
+        }
+    }
+
+    @Test
+    fun `onPeerConnected receives a ControlConnection whose verifiedFingerprint matches the connecting client's real certificate`() {
+        val serverIdentity = DeviceIdentity.createNew("Server")
+        val clientIdentity = DeviceIdentity.createNew("Client")
+        val store = pairedPeerStore(clientIdentity)
+
+        val observedFingerprint = AtomicReference<String?>(null)
+        val latch = CountDownLatch(1)
+        val server = ControlServer(serverIdentity, store, FixedNetworkInfo(LOOPBACK), port = 0)
+        server.onPeerConnected = { conn ->
+            observedFingerprint.set(conn.verifiedFingerprint)
+            latch.countDown()
+        }
+
+        try {
+            val socket = PinnedTls.connect(server.listenEndpoint, clientIdentity) { true }
+            val conn = ControlConnection(socket)
+
+            assertTrue(latch.await(5, TimeUnit.SECONDS))
+            // The value ControlServer hands to onPeerConnected must be derived from the TLS
+            // handshake itself, not from the store or anything the client claims - it must equal
+            // the connecting client's actual certificate fingerprint.
+            assertEquals(clientIdentity.fingerprint, observedFingerprint.get())
+            conn.close()
+        } finally {
+            server.close()
+        }
+    }
+
+    @Test
+    fun `onPairingConnected receives a ControlConnection whose verifiedFingerprint matches the connecting stranger's real certificate`() {
+        val serverIdentity = DeviceIdentity.createNew("Server")
+        val strangerIdentity = DeviceIdentity.createNew("Stranger")
+
+        val observedFingerprint = AtomicReference<String?>(null)
+        val latch = CountDownLatch(1)
+        val server = ControlServer(
+            serverIdentity,
+            emptyPeerStore(),
+            FixedNetworkInfo(LOOPBACK),
+            port = 0,
+            pairingWindow = PairingWindow().apply { open() },
+        )
+        server.onPairingConnected = { conn ->
+            observedFingerprint.set(conn.verifiedFingerprint)
+            latch.countDown()
+        }
+
+        try {
+            val socket = PinnedTls.connect(server.listenEndpoint, strangerIdentity) { true }
+            val conn = ControlConnection(socket)
+
+            assertTrue(latch.await(5, TimeUnit.SECONDS))
+            assertEquals(strangerIdentity.fingerprint, observedFingerprint.get())
             conn.close()
         } finally {
             server.close()

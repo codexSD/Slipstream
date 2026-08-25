@@ -7,8 +7,18 @@ import java.net.Socket
  * (and, for real connections, already pinned-TLS) socket. Thread-safe for concurrent
  * send/receive from different threads (one writer, one reader), but not for concurrent
  * writers among themselves beyond simple serialization.
+ *
+ * [verifiedFingerprint] is the fingerprint of the peer certificate as verified by the TLS
+ * handshake at the time this connection was accepted (e.g. by [ControlServer]) - it is null
+ * only for connections with no TLS-verified peer identity (such as ones constructed directly
+ * around a plain, non-TLS socket in tests). Callers that need to know who they're actually
+ * talking to (for example, pairing code deriving trust from the handshake) MUST use this
+ * value rather than any fingerprint claimed inside a message payload received over the wire.
  */
-class ControlConnection(private val socket: Socket) : AutoCloseable {
+class ControlConnection(
+    private val socket: Socket,
+    val verifiedFingerprint: String? = null,
+) : AutoCloseable {
     private val input = socket.getInputStream()
     private val output = socket.getOutputStream()
 

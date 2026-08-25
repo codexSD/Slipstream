@@ -11,5 +11,8 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '9.0.x'
+      - name: Meridian WinUI gate
+        run: bash windows/scripts/check-meridian-winui.sh
+        shell: bash
       - run: dotnet test windows/Slipstream.sln --configuration Release
       - run: dotnet run --project windows/bench/Slipstream.Bench --configuration Release

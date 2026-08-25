@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "Slipstream.App (Package)": {
+      "commandName": "MsixPackage"
+    },
+    "Slipstream.App (Unpackaged)": {
+      "commandName": "Project"
+    }
+  }
+}

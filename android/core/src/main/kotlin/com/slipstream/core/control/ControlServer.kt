@@ -6,6 +6,7 @@ import com.slipstream.core.identity.Fingerprint
 import com.slipstream.core.identity.PairedPeerStore
 import com.slipstream.core.net.LanGuard
 import com.slipstream.core.net.NetworkInfo
+import com.slipstream.core.pairing.PairingWindow
 import java.net.InetSocketAddress
 import java.security.cert.X509Certificate
 import javax.net.ssl.SSLServerSocket
@@ -19,17 +20,29 @@ import kotlin.concurrent.thread
  * accepted connection's peer fingerprint against [peerStore] — a mismatch is dropped
  * immediately, before [onPeerConnected] (and therefore any application code) ever sees it.
  * Inbound remote addresses are also checked against [LanGuard] before the handshake starts.
+ *
+ * pairing.md §1: an unpaired connection is only ever routed to [onPairingConnected] while
+ * [pairingWindow] is open at the moment its fingerprint check fails; otherwise it is dropped
+ * identically to normal operation. An already-paired peer always reaches [onPeerConnected],
+ * never [onPairingConnected], regardless of whether a window happens to be open.
  */
 class ControlServer(
     private val identity: DeviceIdentity,
     private val peerStore: PairedPeerStore,
     private val networkInfo: NetworkInfo,
     port: Int = SlipstreamPorts.CONTROL,
+    private val pairingWindow: PairingWindow = PairingWindow(),
 ) : AutoCloseable {
 
     /** Invoked (on a background thread) for each connection that passes LanGuard, the TLS
      * handshake, and the post-handshake fingerprint check. */
     var onPeerConnected: ((ControlConnection) -> Unit)? = null
+
+    /** Invoked (on a background thread) for a connection whose fingerprint does not match
+     * the paired peer but was accepted anyway because [pairingWindow] was open. Never
+     * invoked for an already-paired peer's connection - that always goes to
+     * [onPeerConnected] instead. */
+    var onPairingConnected: ((ControlConnection) -> Unit)? = null
 
     private val bindAddress = networkInfo.current()?.localAddress
         ?: throw IllegalStateException("No local network available to bind the control server to")
@@ -76,12 +89,20 @@ class ControlServer(
             val fingerprint = clientCert?.let { Fingerprint.of(it) }
             val trusted = peerStore.peer?.fingerprint
 
-            if (fingerprint == null || trusted == null || fingerprint != trusted) {
-                socket.close()
+            if (fingerprint != null && trusted != null && fingerprint == trusted) {
+                onPeerConnected?.invoke(ControlConnection(socket))
                 return
             }
 
-            onPeerConnected?.invoke(ControlConnection(socket))
+            // Not (yet) a paired peer. Only route to the restricted pairing handler if a
+            // window is open right now - otherwise this must be byte-for-byte identical to
+            // normal operation: dropped before a single message is read.
+            if (pairingWindow.isOpen) {
+                onPairingConnected?.invoke(ControlConnection(socket))
+                return
+            }
+
+            socket.close()
         } catch (e: Exception) {
             try { socket.close() } catch (_: Exception) {}
         }

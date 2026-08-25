@@ -8,8 +8,10 @@ import com.slipstream.core.discovery.DiscoveredPeer
 import com.slipstream.core.discovery.DiscoveryCoordinator
 import com.slipstream.core.discovery.EndpointCache
 import com.slipstream.core.discovery.GatewayProbeStrategy
+import com.slipstream.core.discovery.MulticastLockHandle
 import com.slipstream.core.discovery.MulticastStrategy
 import com.slipstream.core.discovery.MulticastTransport
+import com.slipstream.core.discovery.NoopMulticastLock
 import com.slipstream.core.discovery.PeerProbe
 import com.slipstream.core.discovery.SubnetSweepStrategy
 import com.slipstream.core.discovery.UdpMulticastTransport
@@ -54,6 +56,14 @@ internal class PeerWiring(
     /** Seam over [UdpMulticastTransport]'s construction, for the same reason. */
     internal val multicastTransport: (NetworkBinder) -> MulticastTransport =
         { binder -> UdpMulticastTransport(binder = binder) },
+    /**
+     * The real `WifiManager.MulticastLock`. Defaulting this to [NoopMulticastLock] is what
+     * previously made S3 silently non-functional on shipped hardware: without a held lock most
+     * Wi-Fi drivers never deliver multicast to the app layer at all, so the manifest's
+     * `CHANGE_WIFI_MULTICAST_STATE` permission bought nothing. [SlipstreamApplication] supplies
+     * the real one; the default exists only for tests with no `WifiManager`.
+     */
+    internal val multicastLock: MulticastLockHandle = NoopMulticastLock,
 ) {
 
     /** Exactly what [discoveryCoordinator] hands [MulticastStrategy], named so a test can
@@ -77,6 +87,23 @@ internal class PeerWiring(
         }
     }
 
+    /**
+     * The single [MulticastStrategy] instance, shared between every [DiscoveryCoordinator]
+     * this wiring builds AND the peer's always-on responder. One instance is essential, not
+     * incidental: the strategy refcounts one socket bound to the fixed discovery port across
+     * both concerns, and two instances would be two sockets contending for the same port and
+     * stealing each other's datagrams.
+     */
+    val multicastStrategy: MulticastStrategy by lazy {
+        MulticastStrategy(
+            identity,
+            peerStore,
+            probe(),
+            transportFactory = multicastTransportFactory(),
+            multicastLock = multicastLock,
+        )
+    }
+
     fun discoveryCoordinator(): DiscoveryCoordinator {
         val probe = probe()
         return DiscoveryCoordinator(
@@ -85,12 +112,7 @@ internal class PeerWiring(
             strategies = listOf(
                 CachedEndpointStrategy(endpointCache, probe),
                 GatewayProbeStrategy(probe),
-                MulticastStrategy(
-                    identity,
-                    peerStore,
-                    probe,
-                    transportFactory = multicastTransportFactory(),
-                ),
+                multicastStrategy,
                 SubnetSweepStrategy(probe),
             ),
         )
@@ -104,5 +126,8 @@ internal class PeerWiring(
         clipboardSink = clipboardSink,
         discoveryCoordinatorFactory = { discoveryCoordinator() },
         networkBinder = networkBinder,
+        // Spec §5: the phone must answer a PC's query while it is merely running, not only
+        // while it is itself discovering.
+        discoveryResponder = multicastStrategy,
     )
 }

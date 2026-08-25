@@ -49,7 +49,7 @@ class NetworkBindingTest {
         val serverIdentity = DeviceIdentity.createNew("Server")
         val server = ControlServer(serverIdentity, emptyPeerStore(), object : com.slipstream.core.net.NetworkInfo {
             override fun current() = LocalNetwork(LOOPBACK, null, 32, "k")
-        }, port = 0)
+        }, port = 0).start()
         val binder = RecordingNetworkBinder()
         try {
             val socket = PinnedTls.connect(server.listenEndpoint, DeviceIdentity.createNew("Client"), binder) { true }

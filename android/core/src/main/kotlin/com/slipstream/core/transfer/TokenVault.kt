@@ -63,6 +63,22 @@ class TokenVault(private val nowMs: () -> Long = System::currentTimeMillis) {
         tokens.values.removeIf { it.transferId == transferId }
     }
 
+    /**
+     * Drops every token whose TTL has passed and returns the transfer ids they belonged to.
+     *
+     * [validate] only evicts a token it is asked about, so a token nobody ever presents (a
+     * `pull.request` that was answered but never acted on - a cancelled or abandoned pull)
+     * would otherwise sit here for the process lifetime, along with whatever the caller keeps
+     * keyed by the same transfer id. Callers use the returned ids to drop their own
+     * per-transfer state in step with this one.
+     */
+    fun purgeExpired(): List<UUID> {
+        val now = nowMs()
+        val expired = tokens.values.filter { now > it.expiresAtMs }
+        expired.forEach { tokens.remove(it.value) }
+        return expired.map { it.transferId }.distinct()
+    }
+
     companion object {
         const val TTL_MS = 5 * 60 * 1000L
     }

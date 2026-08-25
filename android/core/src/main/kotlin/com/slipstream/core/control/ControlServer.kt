@@ -60,7 +60,23 @@ class ControlServer(
     @Volatile
     private var running = true
 
-    private val acceptThread = thread(name = "ControlServer-accept", isDaemon = true) { acceptLoop() }
+    /**
+     * The accept loop deliberately does NOT start in a property initializer: [onPeerConnected]
+     * and [onPairingConnected] are assigned by the caller *after* construction, and a
+     * connection landing in that window would be routed to a null callback - dropped silently
+     * and, before this, leaked with its socket still open. The owner calls [start] once the
+     * handlers are in place.
+     */
+    private var acceptThread: Thread? = null
+
+    /** Begins accepting connections. Idempotent; call after assigning the handlers. */
+    @Synchronized
+    fun start(): ControlServer {
+        if (acceptThread == null && running) {
+            acceptThread = thread(name = "ControlServer-accept", isDaemon = true) { acceptLoop() }
+        }
+        return this
+    }
 
     private fun acceptLoop() {
         while (running) {
@@ -90,7 +106,12 @@ class ControlServer(
             val trusted = peerStore.peer?.fingerprint
 
             if (fingerprint != null && trusted != null && fingerprint == trusted) {
-                onPeerConnected?.invoke(ControlConnection(socket, fingerprint))
+                // A null callback must still close the connection: returning without one
+                // leaks the socket (and its accept-side file descriptor) for the process
+                // lifetime, since nothing else holds a reference to it.
+                val connection = ControlConnection(socket, fingerprint, clientCert)
+                val handler = onPeerConnected
+                if (handler == null) connection.close() else handler(connection)
                 return
             }
 
@@ -98,7 +119,9 @@ class ControlServer(
             // window is open right now - otherwise this must be byte-for-byte identical to
             // normal operation: dropped before a single message is read.
             if (pairingWindow.isOpen) {
-                onPairingConnected?.invoke(ControlConnection(socket, fingerprint))
+                val connection = ControlConnection(socket, fingerprint, clientCert)
+                val handler = onPairingConnected
+                if (handler == null) connection.close() else handler(connection)
                 return
             }
 
@@ -111,6 +134,6 @@ class ControlServer(
     override fun close() {
         running = false
         try { serverSocket.close() } catch (_: Exception) {}
-        acceptThread.interrupt()
+        acceptThread?.interrupt()
     }
 }

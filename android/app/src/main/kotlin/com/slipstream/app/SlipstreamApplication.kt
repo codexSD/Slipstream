@@ -4,10 +4,14 @@ import android.app.Application
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.net.wifi.WifiManager
 import android.os.Build
 import com.slipstream.core.SlipstreamPeer
 import com.slipstream.core.control.ClipboardSink
+import com.slipstream.core.discovery.AndroidMulticastLock
 import com.slipstream.core.discovery.EndpointCache
+import com.slipstream.core.discovery.MulticastLockHandle
+import com.slipstream.core.discovery.NoopMulticastLock
 import com.slipstream.core.identity.DeviceIdentity
 import com.slipstream.core.identity.PairedPeerStore
 import com.slipstream.core.net.AndroidNetworkInfo
@@ -24,9 +28,11 @@ import java.io.File
  */
 class SlipstreamApplication : Application() {
 
-    val peer: SlipstreamPeer by lazy { buildPeer() }
+    val peer: SlipstreamPeer by lazy { buildWiring().peer() }
 
-    private fun buildPeer(): SlipstreamPeer {
+    /** Internal (rather than folded into [peer]) so a test can assert what the *production*
+     * path actually assembles - in particular that discovery gets a real multicast lock. */
+    internal fun buildWiring(): PeerWiring {
         val storageDir = File(filesDir, "slipstream")
         val identity = DeviceIdentity.loadOrCreate(storageDir, displayName = Build.MODEL ?: "Android Device")
 
@@ -41,6 +47,19 @@ class SlipstreamApplication : Application() {
             clipboardSink = ClipboardSink { text ->
                 clipboard.setPrimaryClip(ClipData.newPlainText("Slipstream", text))
             },
-        ).peer()
+            multicastLock = androidMulticastLock(),
+        )
+    }
+
+    /**
+     * The real `WifiManager.MulticastLock`. The manifest already requests
+     * `CHANGE_WIFI_MULTICAST_STATE`; without actually acquiring a lock most Wi-Fi drivers
+     * filter multicast before it ever reaches the app, so S3 discovery never worked on
+     * hardware.
+     */
+    private fun androidMulticastLock(): MulticastLockHandle {
+        val wifiManager = applicationContext.getSystemService(WifiManager::class.java)
+            ?: return NoopMulticastLock
+        return AndroidMulticastLock(wifiManager)
     }
 }

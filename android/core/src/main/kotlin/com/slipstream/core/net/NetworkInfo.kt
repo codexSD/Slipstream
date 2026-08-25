@@ -148,7 +148,7 @@ internal fun buildLocalNetwork(
     val gateway = gatewayAddresses.firstOrNull { it is Inet4Address && LanGuard.isLocal(it) }
 
     val networkAddress = SubnetMath.networkAddress(localAddress, prefixLength)
-    val key = "$networkHandle|${networkAddress.hostAddress}/$prefixLength"
+    val key = "cm:$networkHandle|${networkAddress.hostAddress}/$prefixLength"
 
     return LocalNetwork(localAddress, gateway, prefixLength, key)
 }
@@ -173,7 +173,19 @@ internal fun buildLocalNetwork(
             SubnetMath.networkAddress(it, prefixLength) == networkAddress
     }
 
-    val key = "$interfaceName|${networkAddress.hostAddress}/$prefixLength"
+    // Namespaced ("if:") so it can never collide with the ConnectivityManager path's key
+    // ("cm:") for the same subnet - the same physical network flipping between the two code
+    // paths would otherwise invalidate its own cache entry.
+    //
+    // Tradeoff, deliberately accepted: within this path the key is only as distinct as
+    // interface name + subnet, so two different physical networks that share both (two
+    // routers each handing out 192.168.1.x on wlan0) collide. Nothing more stable is
+    // available here - the interface's MAC is unreadable to apps since API 24, and the local
+    // address itself changes on every DHCP lease, which would invalidate the entry far more
+    // often than a collision costs. A collision is harmless beyond a wasted fast path: S1's
+    // cached endpoint is still verified by a pinned-TLS probe before it is used, so a stale
+    // hit fails that probe and discovery falls through to the other strategies.
+    val key = "if:$interfaceName|${networkAddress.hostAddress}/$prefixLength"
     return LocalNetwork(localAddress, gateway, prefixLength, key)
 }
 

@@ -8,13 +8,19 @@ import com.slipstream.core.control.ControlServer
 import com.slipstream.core.control.SessionMessageTypes
 import com.slipstream.core.control.SlipstreamSession
 import com.slipstream.core.discovery.DiscoveryCoordinator
+import com.slipstream.core.discovery.DiscoveryResponder
 import com.slipstream.core.discovery.DiscoveryResult
 import com.slipstream.core.identity.DeviceIdentity
+import com.slipstream.core.identity.PairedPeer
 import com.slipstream.core.identity.PairedPeerStore
 import com.slipstream.core.media.MediaServer
 import com.slipstream.core.media.MediaTokenVault
+import com.slipstream.core.net.IpLiteral
+import com.slipstream.core.net.LanGuard
 import com.slipstream.core.net.MutableNetworkBinder
 import com.slipstream.core.net.NetworkInfo
+import com.slipstream.core.pairing.PairingCoordinator
+import com.slipstream.core.pairing.PairingWindow
 import com.slipstream.core.transfer.BulkServer
 import com.slipstream.core.transfer.BulkSession
 import com.slipstream.core.transfer.PartFile
@@ -23,11 +29,17 @@ import com.slipstream.core.transfer.TransferEngine
 import java.io.File
 import java.net.InetSocketAddress
 import java.util.UUID
+import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.thread
 import kotlin.concurrent.withLock
+import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.int
@@ -61,6 +73,20 @@ class SlipstreamPeer(
     private val clipboardSink: ClipboardSink,
     private val discoveryCoordinatorFactory: () -> DiscoveryCoordinator,
     private val networkBinder: MutableNetworkBinder = MutableNetworkBinder(),
+    /**
+     * The always-on half of discovery (spec §5: "the phone only ever listens and responds").
+     * Kept live for as long as this peer is running, so a PC's multicast query is answered by
+     * a phone that is merely *running*, not only by one that happens to be inside its own
+     * [discover] call. Null (the default) leaves the peer discovery-passive, which is what
+     * every unit test that isn't specifically about the responder wants.
+     */
+    private val discoveryResponder: DiscoveryResponder? = null,
+    /**
+     * The 120-second window pairing is only ever permitted inside (pairing.md §1). Held here
+     * rather than left to [ControlServer]'s own default so [openPairingWindow] has something
+     * to open: without a reference, nothing outside `:core` could ever start a pairing.
+     */
+    private val pairingWindow: PairingWindow = PairingWindow(),
     /** Listen ports. Overridable (with 0 = "any free port") so tests can start real servers
      * without colliding with a device's fixed Slipstream ports or with each other. */
     private val controlPort: Int = SlipstreamPorts.CONTROL,
@@ -117,10 +143,23 @@ class SlipstreamPeer(
     /** Starts every listening server. Also clears [mediaTokenVault] - media tokens are
      * deliberately long-lived (12h) *or* app-restart, whichever is first (design.md §8), and
      * this is that "app restart" boundary. */
-    fun start() {
+    fun start(network: android.net.Network? = null) {
         mediaTokenVault.clear()
-        startServers()
+        networkChangeLock.withLock {
+            startServers()
+            // Seed the dedup state with what was just brought up. Without this the very first
+            // onNetworkChanged callback after start() - which, for the network start() already
+            // bound to, carries no new information at all - would tear these servers straight
+            // back down and rebuild them, on every single cold start.
+            hasAppliedNetwork = true
+            appliedNetwork = network
+        }
     }
+
+    /** The control channel's actual listen address, once [start] has brought it up. Needed by
+     * anything that hands this device's endpoint to a peer out of band - pairing in particular. */
+    val controlEndpoint: InetSocketAddress?
+        get() = controlServer?.listenEndpoint
 
     private fun startServers() {
         // Spec §11 layer 1: every listening socket binds to this network's own address, never
@@ -130,8 +169,13 @@ class SlipstreamPeer(
             "No local network available to bind Slipstream's servers to"
         }.localAddress
 
-        val server = ControlServer(identity, peerStore, networkInfo, port = controlPort)
+        val server = ControlServer(identity, peerStore, networkInfo, port = controlPort, pairingWindow)
         server.onPeerConnected = { conn -> thread(isDaemon = true) { serveConnection(conn) } }
+        server.onPairingConnected = { conn -> servePairingConnection(conn) }
+        // Only now, with both handlers assigned, may connections start arriving: the accept
+        // loop used to start inside ControlServer's constructor, so anything landing in this
+        // window was routed to a null callback and dropped (and leaked).
+        server.start()
         controlServer = server
 
         bulkServer = BulkServer(
@@ -141,6 +185,11 @@ class SlipstreamPeer(
             bindAddress = bindAddress,
         )
         mediaServer = MediaServer(mediaTokenVault, port = mediaPort, bindAddress = bindAddress)
+
+        // Last, once every listening socket is up: the responder is bound to the same network,
+        // so it is restarted in step with the servers rather than left listening on a socket
+        // scoped to the network that just went away.
+        startResponder()
     }
 
     // Source files this device is serving out via bulk (i.e. this device is the sender for
@@ -159,8 +208,36 @@ class SlipstreamPeer(
         mediaTokenVault = mediaTokenVault,
         mediaPort = { mediaServer?.boundPort ?: mediaPort },
         clipboardSink = clipboardSink,
-        onBulkIssued = { transferId, file -> sourceFileForTransfer[transferId] = file },
+        onBulkIssued = { transferId, file -> recordServedTransfer(transferId, file) },
     )
+
+    /** Records a transfer this device is serving out, and takes the opportunity to expire any
+     * that are long over. Internal so a test can exercise the bookkeeping without a wire. */
+    internal fun recordServedTransfer(transferId: UUID, file: File) {
+        sourceFileForTransfer[transferId] = file
+        purgeExpiredTransfers()
+    }
+
+    /** Drops a served transfer's authorization and its source-file entry together. */
+    internal fun completeServedTransfer(transferId: UUID) {
+        bulkTokenVault.revoke(transferId)
+        sourceFileForTransfer.remove(transferId)
+    }
+
+    /**
+     * Drops the state of every transfer whose bulk token has expired. The sending side never
+     * learns that a pull finished (the bulk protocol has no completion message), so without
+     * this [sourceFileForTransfer] grows by one entry per `pull.request` ever served and never
+     * shrinks. The token's own 5-minute TTL is the authoritative "this transfer is over"
+     * signal, so both are expired together.
+     */
+    internal fun purgeExpiredTransfers() {
+        bulkTokenVault.purgeExpired().forEach { sourceFileForTransfer.remove(it) }
+    }
+
+    /** Number of served-transfer entries currently retained. Internal, for a test that this
+     * bookkeeping is actually bounded rather than merely intended to be. */
+    internal val servedTransferCount: Int get() = sourceFileForTransfer.size
 
     private fun serveConnection(conn: ControlConnection) {
         val session = buildSession()
@@ -174,6 +251,148 @@ class SlipstreamPeer(
             // Connection dropped mid-session; nothing more to do.
         } finally {
             conn.close()
+        }
+    }
+
+    // --- pairing (pairing.md §1-§3) ---
+
+    /** One in-progress [openPairingWindow] call, waiting for a stranger to connect. */
+    private class PendingPairing(val confirmCode: (String) -> Boolean) {
+        val outcome = ArrayBlockingQueue<Boolean>(1)
+    }
+
+    @Volatile
+    private var pendingPairing: PendingPairing? = null
+
+    /** True while [openPairingWindow] is waiting. Exists so a test (or a UI) can observe that
+     * the window really is open without reaching into private state. */
+    val isPairingWindowOpen: Boolean get() = pairingWindow.isOpen
+
+    /**
+     * Opens the pairing window and waits (up to [timeout]) for a peer to connect and complete
+     * the exchange, returning the peer that got paired or null if nobody did.
+     *
+     * [confirmCode] is called once with the derived 6-digit code (pairing.md §5) - the caller
+     * shows it to the user and returns true only if the user says it matches what the other
+     * device is showing. The code is always derived from the fingerprint the TLS handshake
+     * actually proved ([ControlConnection.verifiedFingerprint]), never from anything claimed
+     * in a `pair.offer` payload.
+     *
+     * This is the responder half. The initiating half is [pairWith].
+     */
+    suspend fun openPairingWindow(
+        timeout: Duration = 120.seconds,
+        confirmCode: (code: String) -> Boolean,
+    ): PairedPeer? = withContext(Dispatchers.IO) { awaitPairing(timeout, confirmCode) }
+
+    /** Blocking form of [openPairingWindow], for callers that already own a thread. */
+    fun awaitPairing(timeout: Duration = 120.seconds, confirmCode: (code: String) -> Boolean): PairedPeer? {
+        val pending = PendingPairing(confirmCode)
+        synchronized(this) {
+            check(pendingPairing == null) { "a pairing window is already open" }
+            pendingPairing = pending
+        }
+        pairingWindow.open()
+        try {
+            val paired = pending.outcome.poll(timeout.inWholeMilliseconds, TimeUnit.MILLISECONDS)
+            return if (paired == true) peerStore.peer else null
+        } finally {
+            // Closed on success, decline, and timeout alike: an unpaired stranger must never
+            // find a window still standing open after the user's attempt ended.
+            pairingWindow.close()
+            synchronized(this) { pendingPairing = null }
+        }
+    }
+
+    /**
+     * Initiates pairing against a peer whose window is already open, at [endpoint]. Connects
+     * over TLS *without* a pin - there is nothing to pin yet, which is the entire point of
+     * pairing - and derives the code from the certificate that handshake presented.
+     */
+    suspend fun pairWith(
+        endpoint: InetSocketAddress,
+        confirmCode: (code: String) -> Boolean,
+    ): PairedPeer? = withContext(Dispatchers.IO) { initiatePairing(endpoint, confirmCode) }
+
+    /** Blocking form of [pairWith]. */
+    fun initiatePairing(endpoint: InetSocketAddress, confirmCode: (code: String) -> Boolean): PairedPeer? {
+        LanGuard.ensureLocal(
+            requireNotNull(endpoint.address) { "pairing endpoint $endpoint has no resolved address" },
+        )
+        val socket = com.slipstream.core.control.PinnedTls.connect(endpoint, identity, networkBinder) { true }
+        val certificate = socket.session.peerCertificates.firstOrNull() as? java.security.cert.X509Certificate
+        val fingerprint = certificate?.let(com.slipstream.core.identity.Fingerprint::of)
+        ControlConnection(socket, fingerprint, certificate).use { conn ->
+            if (certificate == null || fingerprint == null) return null
+            val paired = PairingCoordinator(
+                identity = identity,
+                peerStore = peerStore,
+                connection = conn,
+                remoteVerifiedFingerprint = fingerprint,
+                remoteCertificate = certificate,
+                isInitiator = true,
+                decide = confirmCode,
+            ).run()
+            return if (paired) peerStore.peer else null
+        }
+    }
+
+    private fun servePairingConnection(conn: ControlConnection) {
+        val pending = pendingPairing
+        val fingerprint = conn.verifiedFingerprint
+        val certificate = conn.peerCertificate
+        if (pending == null || fingerprint == null || certificate == null) {
+            // Nobody is waiting (or the handshake produced no identity to derive a code from):
+            // close rather than leave the socket dangling.
+            conn.close()
+            return
+        }
+        thread(isDaemon = true) {
+            val paired = try {
+                PairingCoordinator(
+                    identity = identity,
+                    peerStore = peerStore,
+                    connection = conn,
+                    remoteVerifiedFingerprint = fingerprint,
+                    remoteCertificate = certificate,
+                    isInitiator = false,
+                    decide = pending.confirmCode,
+                ).run()
+            } catch (e: Exception) {
+                false
+            } finally {
+                conn.close()
+            }
+            pending.outcome.offer(paired)
+        }
+    }
+
+    // --- discovery responder ---
+
+    /** Balances [startResponder] against [stopResponder]: [closeServers] is called on paths
+     * where the responder was never started (e.g. a [startServers] that threw early), and an
+     * unmatched stop would tear down a listener nobody started. */
+    private var responderStarted = false
+
+    private fun startResponder() {
+        val responder = discoveryResponder ?: return
+        if (responderStarted) return
+        try {
+            runBlocking { responder.startResponder() }
+            responderStarted = true
+        } catch (e: Exception) {
+            // Multicast can be unavailable (restricted, no lock, no interface). Discovery's
+            // other strategies still work, so this must never stop the servers coming up.
+        }
+    }
+
+    private fun stopResponder() {
+        val responder = discoveryResponder ?: return
+        if (!responderStarted) return
+        responderStarted = false
+        try {
+            runBlocking { responder.stopResponder() }
+        } catch (e: Exception) {
         }
     }
 
@@ -231,14 +450,19 @@ class SlipstreamPeer(
                 closeServers()
             }
 
-            if (applied) {
-                hasAppliedNetwork = true
-                appliedNetwork = network
-            }
+            // Re-discovery and resume are the *consequences* of a successful apply, so they
+            // only run when one happened. Running them after a failed apply (or after a
+            // network that isn't ready yet) means discovering and resuming over servers that
+            // are not up and a binder pointing at a network with no usable interface - pure
+            // wasted work, and a resume that is guaranteed to fail and burn its retry.
+            if (!applied) return
+
+            hasAppliedNetwork = true
+            appliedNetwork = network
 
             thread(isDaemon = true) {
                 val result = try {
-                    kotlinx.coroutines.runBlocking { discover() }
+                    runBlocking { discover() }
                 } catch (e: Exception) {
                     null
                 }
@@ -251,6 +475,7 @@ class SlipstreamPeer(
     /** Closes every listening server and forgets it. Safe to call twice, and safe to call on a
      * partially-started set (which is exactly what a failed [startServers] leaves behind). */
     private fun closeServers() {
+        stopResponder()
         try { controlServer?.close() } catch (_: Exception) {}
         controlServer = null
         try { bulkServer?.close() } catch (_: Exception) {}
@@ -288,6 +513,13 @@ class SlipstreamPeer(
                     // Best-effort resume; the caller can retry pullFile() explicitly later.
                 } finally {
                     resumeInFlight.remove(transferId)
+                    // A resume that finished the file owns the PartFile's shutdown - the
+                    // original pullFile() call that created it is long gone (its connection
+                    // is what dropped), so nothing else will ever close it.
+                    if (pull.part.complete()) {
+                        activePulls.remove(transferId)
+                        finishTransfer(transferId, pull.part)
+                    }
                 }
             }
         }
@@ -329,7 +561,8 @@ class SlipstreamPeer(
             val host = payload.getValue("host").jsonPrimitive.content
             val port = payload.getValue("port").jsonPrimitive.int
             val size = payload.getValue("size").jsonPrimitive.long
-            return Negotiated(BulkSession(InetSocketAddress(host, port), transferId, token), size)
+
+            return Negotiated(BulkSession(bulkEndpointFrom(host, port), transferId, token), size)
         }
     }
 
@@ -355,13 +588,56 @@ class SlipstreamPeer(
                 transferEngine.pull(part, streams) { negotiatePull(peerControlEndpoint, remotePath, streams).session }
             } finally {
                 activePulls.remove(transferId)
+                // close() releases the file descriptor AND performs the final debounced sidecar
+                // flush. Dropping the PartFile without it leaks the fd and loses the last few
+                // chunks' completion bits, so a resumed transfer re-downloads them for nothing.
+                finishTransfer(transferId, part)
             }
         }
         return part
     }
 
+    /**
+     * Ends this device's involvement in [transferId]: closes [part] (fd + final sidecar
+     * flush) and drops the per-transfer state kept for a transfer this device *served*.
+     *
+     * [TokenVault.revoke] and the [sourceFileForTransfer] entry are cleared together, since
+     * they are two halves of one authorization: leaving either behind means the map grows by
+     * one entry per `pull.request` ever answered, for the life of the process.
+     */
+    private fun finishTransfer(transferId: UUID, part: PartFile?) {
+        try { part?.close() } catch (_: Exception) {}
+        completeServedTransfer(transferId)
+    }
+
     override fun close() {
         // Same lock as onNetworkChanged, so close() cannot land halfway through a restart.
         networkChangeLock.withLock { teardown() }
+    }
+
+    companion object {
+        /**
+         * Turns the `host`/`port` of an untrusted `pull.ok` payload into a bulk endpoint, or
+         * throws. Two rules apply before peer-supplied text may become a socket address:
+         *
+         *  - spec §11 layer 4 ("no outbound calls of any kind"): it must be an IP *literal*.
+         *    `InetSocketAddress(String, Int)` and `InetAddress.getByName` both fall back to
+         *    DNS, so a hostile `pull.ok` carrying `host: "attacker.example.com"` would make
+         *    this device emit a DNS query off the LAN before anything else got a look at it.
+         *  - spec §11 layer 2: the resulting address must be local, exactly as
+         *    [com.slipstream.core.control.PinnedTls.connect] enforces for the control channel.
+         *    Without it a paired-but-compromised peer could point the bulk connection at any
+         *    routable address on the internet.
+         *
+         * Enforced here, at the parse site, rather than only at the socket: a host that fails
+         * either rule must never reach [com.slipstream.core.transfer.BulkClient] at all.
+         */
+        internal fun bulkEndpointFrom(host: String, port: Int): InetSocketAddress {
+            val address = IpLiteral.parse(host)
+                ?: throw IllegalArgumentException("pull.ok host '$host' is not an IP literal")
+            LanGuard.ensureLocal(address)
+            require(port in 1..65535) { "pull.ok port $port out of range" }
+            return InetSocketAddress(address, port)
+        }
     }
 }

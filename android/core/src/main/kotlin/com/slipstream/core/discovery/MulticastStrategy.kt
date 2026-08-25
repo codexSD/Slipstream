@@ -31,31 +31,45 @@ import kotlinx.coroutines.withContext
  * exactly one pending receive, so two loops nondeterministically steal each other's
  * packets (see docs/superpowers/plans/2026-08-25-core-discovery-control-deviations.md).
  *
- * The socket (and the multicast lock) is opened for the duration of a discovery burst —
- * refcounted across concurrent [find] calls — and closed the moment the last one
- * finishes. It is never held open, or the lock acquired, while idle.
+ * The socket is open whenever *either* concern needs it, refcounted separately for each:
+ *
+ *  - **find() bursts** ([find]) open the socket AND acquire the multicast lock, releasing
+ *    both the moment the last concurrent burst finishes.
+ *  - **the always-on responder** ([startResponder]/[stopResponder], driven by
+ *    [com.slipstream.core.SlipstreamPeer] for the whole time the peer is running) opens the
+ *    socket only. Spec §5 says "the phone only ever listens and responds", and §5/§14 say the
+ *    multicast lock is never held while idle - so idle listening happens *without* the lock.
+ *    A phone whose Wi-Fi driver filters unlocked multicast still answers via the unicast
+ *    fallback path §5 defines for exactly this case, and a phone that is actively discovering
+ *    holds the lock anyway.
+ *
+ * Both concerns share the same single receive loop; the socket closes only once neither
+ * needs it.
  */
 class MulticastStrategy(
     private val identity: DeviceIdentity,
     private val pairedPeerStore: PairedPeerStore,
     private val probe: PeerProbe,
     private val transportFactory: () -> MulticastTransport = { UdpMulticastTransport() },
-    private val multicastLock: MulticastLockHandle = NoopMulticastLock,
+    /** Public so the app-level wiring can be proven, by test, to have supplied a real lock
+     * rather than silently inheriting [NoopMulticastLock]. */
+    val multicastLock: MulticastLockHandle = NoopMulticastLock,
     private val receiverScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
-) : DiscoveryStrategy {
+) : DiscoveryStrategy, DiscoveryResponder {
 
     override val name: String = "multicast"
 
     private val lifecycleMutex = Mutex()
     private var transport: MulticastTransport? = null
     private var receiveJob: Job? = null
-    private var refCount = 0
+    private var findRefCount = 0
+    private var responderRefCount = 0
     private val subscribers = CopyOnWriteArrayList<Channel<DatagramMessage>>()
 
     override suspend fun find(network: LocalNetwork): DiscoveredPeer? {
         val paired = pairedPeerStore.peer ?: return null
 
-        start()
+        start(forFind = true)
         val channel = Channel<DatagramMessage>(Channel.UNLIMITED)
         subscribers.add(channel)
         return try {
@@ -88,43 +102,68 @@ class MulticastStrategy(
             withContext(NonCancellable) {
                 subscribers.remove(channel)
                 channel.close()
-                stop()
+                stop(forFind = true)
             }
         }
     }
 
-    private suspend fun start() = lifecycleMutex.withLock {
-        if (refCount == 0) {
-            multicastLock.acquire()
-            try {
+    /**
+     * Starts (or joins) the long-lived responder: the socket stays bound, and this device
+     * answers a paired peer's query, for as long as the peer is running - not merely while
+     * one of its own [find] calls happens to be in flight. Without this a PC's multicast
+     * query reaches a phone with no bound socket and goes unanswered (spec §5 S3).
+     */
+    override suspend fun startResponder() {
+        start(forFind = false)
+    }
+
+    override suspend fun stopResponder() {
+        stop(forFind = false)
+    }
+
+    private suspend fun start(forFind: Boolean) = lifecycleMutex.withLock {
+        val alreadyOpen = findRefCount + responderRefCount > 0
+        val takesLock = forFind && findRefCount == 0
+        if (takesLock) multicastLock.acquire()
+        try {
+            if (!alreadyOpen) {
                 val newTransport = transportFactory()
                 transport = newTransport
                 receiveJob = receiverScope.launch { receiveLoop(newTransport) }
-            } catch (e: Throwable) {
-                // Undo the partial start so the lock isn't leaked and refCount stays at
-                // 0 for the next find() to retry cleanly, rather than showing a phantom
-                // count with no transport ever set up.
-                transport = null
-                multicastLock.release()
-                throw e
             }
+        } catch (e: Throwable) {
+            // Undo the partial start so the lock isn't leaked and the refcounts stay at
+            // 0 for the next attempt to retry cleanly, rather than showing a phantom
+            // count with no transport ever set up.
+            transport = null
+            if (takesLock) multicastLock.release()
+            throw e
         }
-        refCount++
+        if (forFind) findRefCount++ else responderRefCount++
     }
 
-    private suspend fun stop() = lifecycleMutex.withLock {
-        refCount--
-        if (refCount <= 0) {
-            refCount = 0
+    private suspend fun stop(forFind: Boolean) = lifecycleMutex.withLock {
+        if (forFind) {
+            findRefCount--
+            if (findRefCount <= 0) {
+                findRefCount = 0
+                // Released as soon as the last *burst* ends, even if the responder keeps the
+                // socket open afterwards: idle listening must never hold the lock.
+                multicastLock.release()
+            }
+        } else {
+            responderRefCount--
+            if (responderRefCount < 0) responderRefCount = 0
+        }
+
+        if (findRefCount + responderRefCount <= 0) {
             // Close first: unblocks a socket-level receive() so the loop exits on its
             // own, then join it. Order matters — cancelling first can leave a blocking
-            // JDK socket read stuck until the OS notices, holding the lock open longer
-            // than necessary.
+            // JDK socket read stuck until the OS notices.
             transport?.close()
             receiveJob?.cancelAndJoin()
             receiveJob = null
             transport = null
-            multicastLock.release()
         }
     }
 

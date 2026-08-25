@@ -1,5 +1,6 @@
 package com.slipstream.core.transfer
 
+import com.slipstream.core.net.LanGuard
 import com.slipstream.core.net.NetworkBinder
 import java.io.DataInputStream
 import java.io.DataOutputStream
@@ -83,6 +84,14 @@ class BulkClient(
         streamIndex: Int,
         onProgress: ((Long) -> Unit)?,
     ) {
+        // Spec §11 layer 2 applies to outbound connections too, and the bulk endpoint arrives
+        // from a peer-supplied `pull.ok` payload. SlipstreamPeer already refuses a non-literal
+        // or non-local host when it parses that payload; this is the same check at the socket
+        // itself, so no caller can reach the network by handing over an unchecked endpoint.
+        val target = endpoint.address
+            ?: throw IllegalArgumentException("bulk endpoint $endpoint has no resolved address")
+        LanGuard.ensureLocal(target)
+
         Socket().use { socket ->
             binder.bind(socket)
             socket.connect(endpoint, connectTimeoutMs)

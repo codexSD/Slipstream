@@ -19,7 +19,11 @@ object ControlClient {
         val socket = PinnedTls.connect(endpoint, identity, binder) { fingerprint ->
             peerStore.peer?.fingerprint == fingerprint
         }
-        return ControlConnection(socket, socket.session.peerCertificates.firstOrNull()
-            ?.let { (it as? java.security.cert.X509Certificate)?.let(com.slipstream.core.identity.Fingerprint::of) })
+        val certificate = socket.session.peerCertificates.firstOrNull() as? java.security.cert.X509Certificate
+        return ControlConnection(
+            socket,
+            certificate?.let(com.slipstream.core.identity.Fingerprint::of),
+            certificate,
+        )
     }
 }

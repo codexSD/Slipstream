@@ -75,7 +75,7 @@ class PartFile private constructor(
 
     private fun persistSidecar() {
         val bytes = bitmapLock.withLock { bitmap.rawBytes() }
-        sidecar.writeBytes(bytes)
+        sidecar.writeBytes(encodeSidecar(transferId, fileSize, chunkSize, bytes))
         onPersist?.invoke()
     }
 
@@ -88,8 +88,77 @@ class PartFile private constructor(
     companion object {
         private const val DEFAULT_DEBOUNCE_MS = 500L
 
+        /** Sidecar header: "SSBM" + version 1, then transferId (16), fileSize (8), chunkSize (4). */
+        private val SIDECAR_MAGIC = byteArrayOf('S'.code.toByte(), 'S'.code.toByte(), 'B'.code.toByte(), 'M'.code.toByte())
+        private const val SIDECAR_VERSION = 1
+        internal const val SIDECAR_HEADER_BYTES = 4 + 1 + 16 + 8 + 4
+
         fun sidecarFor(destination: File): File =
             File(destination.parentFile, destination.name + ".bitmap")
+
+        /**
+         * Serializes a sidecar, stamping the transfer it belongs to and the file geometry it
+         * describes into the file's own content.
+         *
+         * Without that stamp the sidecar is keyed only by destination *path*: pulling a
+         * different file of coincidentally the same size to the same path would inherit an
+         * unrelated transfer's completion bits and skip downloading those chunks, silently
+         * producing a corrupt file made of two different sources.
+         */
+        internal fun encodeSidecar(
+            transferId: UUID,
+            fileSize: Long,
+            chunkSize: Int,
+            bitmapBytes: ByteArray,
+        ): ByteArray {
+            val buf = ByteBuffer.allocate(SIDECAR_HEADER_BYTES + bitmapBytes.size)
+            buf.put(SIDECAR_MAGIC)
+            buf.put(SIDECAR_VERSION.toByte())
+            buf.putLong(transferId.mostSignificantBits)
+            buf.putLong(transferId.leastSignificantBits)
+            buf.putLong(fileSize)
+            buf.putInt(chunkSize)
+            buf.put(bitmapBytes)
+            return buf.array()
+        }
+
+        /**
+         * Returns the bitmap bytes a sidecar holds, or null when it does not describe *this*
+         * transfer and geometry - a stale sidecar is discarded and the bitmap rebuilt from
+         * scratch rather than tolerated, which is the only safe answer: its bits refer to
+         * content that is no longer there.
+         */
+        internal fun decodeSidecar(
+            raw: ByteArray,
+            transferId: UUID,
+            fileSize: Long,
+            chunkSize: Int,
+        ): ByteArray? {
+            if (raw.size < SIDECAR_HEADER_BYTES) return null
+            val buf = ByteBuffer.wrap(raw)
+            val magic = ByteArray(4)
+            buf.get(magic)
+            if (!magic.contentEquals(SIDECAR_MAGIC)) return null
+            if (buf.get().toInt() != SIDECAR_VERSION) return null
+            if (UUID(buf.long, buf.long) != transferId) return null
+            if (buf.long != fileSize) return null
+            if (buf.int != chunkSize) return null
+            return raw.copyOfRange(SIDECAR_HEADER_BYTES, raw.size)
+        }
+
+        /** Writes a sidecar for [destination] directly, without opening the part file. Used by
+         * tests that need to stage a previously-interrupted transfer's on-disk state. */
+        internal fun writeSidecar(
+            destination: File,
+            transferId: UUID,
+            fileSize: Long,
+            chunkSize: Int,
+            bitmap: ChunkBitmap,
+        ) {
+            sidecarFor(destination).writeBytes(
+                encodeSidecar(transferId, fileSize, chunkSize, bitmap.rawBytes()),
+            )
+        }
 
         /**
          * Opens [destination] for resumable writing, preallocating it to [size] bytes and
@@ -109,8 +178,13 @@ class PartFile private constructor(
 
             val chunkCount = ChunkBitmap.chunkCountFor(size, chunkSize)
             val sidecar = sidecarFor(destination)
-            val bitmap = if (sidecar.exists()) {
-                ChunkBitmap.fromBytes(sidecar.readBytes(), chunkCount)
+            val restored = if (sidecar.exists()) {
+                decodeSidecar(sidecar.readBytes(), transferId, size, chunkSize)
+            } else {
+                null
+            }
+            val bitmap = if (restored != null) {
+                ChunkBitmap.fromBytes(restored, chunkCount)
             } else {
                 ChunkBitmap(chunkCount)
             }

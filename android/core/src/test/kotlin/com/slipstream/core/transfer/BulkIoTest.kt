@@ -214,8 +214,13 @@ class BulkTransferIoTest {
 
         val bitmap = ChunkBitmap(chunkCount)
         completed.forEach { bitmap[it] = true }
-        val sidecar = PartFile.sidecarFor(destination)
-        sidecar.writeBytes(bitmap.rawBytes())
+        PartFile.writeSidecar(
+            destination,
+            transferId,
+            fileSize = chunkCount.toLong() * chunkSize,
+            chunkSize = chunkSize,
+            bitmap = bitmap,
+        )
         return bitmap
     }
 

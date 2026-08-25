@@ -47,7 +47,7 @@ private fun pairedPeerStore(trustedIdentity: DeviceIdentity): PairedPeerStore {
 
 /** Starts a bare TLS server accepting the given identity's cert, for client-side pin tests. */
 private fun startTlsServer(identity: DeviceIdentity): ControlServer {
-    val server = ControlServer(identity, emptyPeerStore(), FixedNetworkInfo(LOOPBACK), port = 0)
+    val server = ControlServer(identity, emptyPeerStore(), FixedNetworkInfo(LOOPBACK), port = 0).start()
     return server
 }
 
@@ -92,7 +92,7 @@ class ControlChannelTest {
         // dropped before a single message is read.
         val serverIdentity = DeviceIdentity.createNew("Server")
         val handled = AtomicBoolean(false)
-        val server = ControlServer(serverIdentity, emptyPeerStore(), FixedNetworkInfo(LOOPBACK), port = 0)
+        val server = ControlServer(serverIdentity, emptyPeerStore(), FixedNetworkInfo(LOOPBACK), port = 0).start()
         server.onPeerConnected = { handled.set(true) }
 
         try {
@@ -126,7 +126,7 @@ class ControlChannelTest {
 
         val received = AtomicReference<ControlMessage?>(null)
         val latch = CountDownLatch(1)
-        val server = ControlServer(serverIdentity, store, FixedNetworkInfo(LOOPBACK), port = 0)
+        val server = ControlServer(serverIdentity, store, FixedNetworkInfo(LOOPBACK), port = 0).start()
         server.onPeerConnected = { conn ->
             received.set(conn.receive())
             latch.countDown()
@@ -153,7 +153,7 @@ class ControlChannelTest {
 
         val observedFingerprint = AtomicReference<String?>(null)
         val latch = CountDownLatch(1)
-        val server = ControlServer(serverIdentity, store, FixedNetworkInfo(LOOPBACK), port = 0)
+        val server = ControlServer(serverIdentity, store, FixedNetworkInfo(LOOPBACK), port = 0).start()
         server.onPeerConnected = { conn ->
             observedFingerprint.set(conn.verifiedFingerprint)
             latch.countDown()
@@ -187,7 +187,7 @@ class ControlChannelTest {
             FixedNetworkInfo(LOOPBACK),
             port = 0,
             pairingWindow = PairingWindow().apply { open() },
-        )
+        ).start()
         server.onPairingConnected = { conn ->
             observedFingerprint.set(conn.verifiedFingerprint)
             latch.countDown()
@@ -261,7 +261,7 @@ class ControlChannelTest {
     @Test
     fun `server binds to the specific local interface, not the wildcard address`() {
         val identity = DeviceIdentity.createNew("Server")
-        val server = ControlServer(identity, emptyPeerStore(), FixedNetworkInfo(LOOPBACK), port = 0)
+        val server = ControlServer(identity, emptyPeerStore(), FixedNetworkInfo(LOOPBACK), port = 0).start()
         try {
             assertEquals(LOOPBACK, server.listenEndpoint.address)
             assertFalse(server.listenEndpoint.address.isAnyLocalAddress)
@@ -277,7 +277,7 @@ class ControlChannelTest {
         val store = pairedPeerStore(clientIdentity)
 
         val latch = CountDownLatch(1)
-        val server = ControlServer(serverIdentity, store, FixedNetworkInfo(LOOPBACK), port = 0)
+        val server = ControlServer(serverIdentity, store, FixedNetworkInfo(LOOPBACK), port = 0).start()
         server.onPeerConnected = { conn ->
             val msg = conn.receive()
             if (msg != null) {

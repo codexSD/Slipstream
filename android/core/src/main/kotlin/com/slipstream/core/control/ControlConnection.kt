@@ -1,6 +1,7 @@
 package com.slipstream.core.control
 
 import java.net.Socket
+import java.security.cert.X509Certificate
 
 /**
  * A framed control-channel connection: JSON-lines messages over an already-established
@@ -18,6 +19,11 @@ import java.net.Socket
 class ControlConnection(
     private val socket: Socket,
     val verifiedFingerprint: String? = null,
+    /** The peer's X.509 certificate exactly as presented during that same handshake, for
+     * callers that must persist it (pairing does: a [com.slipstream.core.identity.PairedPeer]
+     * stores the certificate itself, not just its fingerprint). Null under the same conditions
+     * as [verifiedFingerprint]. */
+    val peerCertificate: X509Certificate? = null,
 ) : AutoCloseable {
     private val input = socket.getInputStream()
     private val output = socket.getOutputStream()

@@ -69,7 +69,7 @@ class NetworkInfoTest {
 
         assertEquals(InetAddress.getByName("192.168.1.42"), local!!.localAddress)
         assertEquals(24, local.prefixLength)
-        assertEquals("wlan0|192.168.1.0/24", local.key)
+        assertEquals("if:wlan0|192.168.1.0/24", local.key)
     }
 
     @Test
@@ -200,7 +200,7 @@ class NetworkInfoTest {
             gatewayAddresses = emptyList(),
         )
 
-        assertEquals("42|192.168.1.0/24", local!!.key)
+        assertEquals("cm:42|192.168.1.0/24", local!!.key)
     }
 
     @Test

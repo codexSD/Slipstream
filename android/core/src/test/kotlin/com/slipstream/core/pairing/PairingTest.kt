@@ -96,7 +96,7 @@ class PairingTest {
     @Test
     fun `outside an open window an unpaired connection is still dropped`() {
         val serverIdentity = DeviceIdentity.createNew("Server")
-        val server = ControlServer(serverIdentity, emptyPeerStore(), FixedNetworkInfo(LOOPBACK), port = 0, PairingWindow())
+        val server = ControlServer(serverIdentity, emptyPeerStore(), FixedNetworkInfo(LOOPBACK), port = 0, PairingWindow()).start()
         var pairingReached = false
         var peerReached = false
         server.onPairingConnected = { pairingReached = true }
@@ -125,7 +125,7 @@ class PairingTest {
         val serverIdentity = DeviceIdentity.createNew("Server")
         val window = PairingWindow()
         window.open()
-        val server = ControlServer(serverIdentity, emptyPeerStore(), FixedNetworkInfo(LOOPBACK), port = 0, window)
+        val server = ControlServer(serverIdentity, emptyPeerStore(), FixedNetworkInfo(LOOPBACK), port = 0, window).start()
         val latch = CountDownLatch(1)
         server.onPairingConnected = { latch.countDown() }
 
@@ -154,7 +154,7 @@ class PairingTest {
         )
         val window = PairingWindow()
         window.open()
-        val server = ControlServer(serverIdentity, store, FixedNetworkInfo(LOOPBACK), port = 0, window)
+        val server = ControlServer(serverIdentity, store, FixedNetworkInfo(LOOPBACK), port = 0, window).start()
         val peerLatch = CountDownLatch(1)
         var pairingReached = false
         server.onPeerConnected = { peerLatch.countDown() }
@@ -178,7 +178,7 @@ class PairingTest {
         val serverIdentity = DeviceIdentity.createNew("Server")
         val window = PairingWindow()
         window.open()
-        val server = ControlServer(serverIdentity, emptyPeerStore(), FixedNetworkInfo(LOOPBACK), port = 0, window)
+        val server = ControlServer(serverIdentity, emptyPeerStore(), FixedNetworkInfo(LOOPBACK), port = 0, window).start()
         val received = java.util.concurrent.atomic.AtomicReference<ControlMessage?>(null)
         val latch = CountDownLatch(1)
         server.onPairingConnected = { conn ->
@@ -215,7 +215,7 @@ class PairingTest {
 
         val window = PairingWindow()
         window.open()
-        val server = ControlServer(bobIdentity, bobStore, FixedNetworkInfo(LOOPBACK), port = 0, window)
+        val server = ControlServer(bobIdentity, bobStore, FixedNetworkInfo(LOOPBACK), port = 0, window).start()
 
         val bobResult = java.util.concurrent.atomic.AtomicReference<Boolean?>(null)
         val bobDone = CountDownLatch(1)
@@ -272,7 +272,7 @@ class PairingTest {
 
         val window = PairingWindow()
         window.open()
-        val server = ControlServer(bobIdentity, bobStore, FixedNetworkInfo(LOOPBACK), port = 0, window)
+        val server = ControlServer(bobIdentity, bobStore, FixedNetworkInfo(LOOPBACK), port = 0, window).start()
 
         val bobResult = java.util.concurrent.atomic.AtomicReference<Boolean?>(null)
         val bobDone = CountDownLatch(1)

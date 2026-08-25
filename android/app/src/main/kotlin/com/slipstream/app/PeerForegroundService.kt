@@ -34,9 +34,14 @@ class PeerForegroundService : Service() {
         startForeground(NOTIFICATION_ID, buildNotification())
 
         val app = application as SlipstreamApplication
-        app.peer.start()
-
         connectivityManager = getSystemService(ConnectivityManager::class.java)
+
+        // Told which network this bring-up belongs to, so the first onNetworkChanged callback
+        // for that same network - which carries no new information - is recognized as a repeat
+        // instead of tearing down and rebuilding everything start() just brought up.
+        val active = runCatching { connectivityManager.activeNetwork }.getOrNull()
+        app.peer.start(active)
+
         val callback = buildNetworkCallback(connectivityManager) { app.peer.onNetworkChanged(it) }
         connectivityManager.registerNetworkCallback(networkRequest(), callback)
     }

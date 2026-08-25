@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Sockets;
+using System.Security.Cryptography.X509Certificates;
 using Slipstream.Core.Control;
 using Slipstream.Core.Identity;
 
@@ -210,6 +211,108 @@ public class PinnedTlsTests
         finally
         {
             Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// Starts a TLS server that requires a client certificate and completes the
+    /// returned task with whatever certificate the client actually sent.
+    /// </summary>
+    private static (TcpListener Listener, TaskCompletionSource<X509Certificate2> SeenClientCert)
+        StartServerCapturingClientCertificate(DeviceIdentity identity, CancellationToken cancellationToken)
+    {
+        var seen = new TaskCompletionSource<X509Certificate2>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                using var client = await listener.AcceptTcpClientAsync(cancellationToken);
+                await using var stream = await PinnedTls.AuthenticateAsServerAsync(
+                    client.GetStream(), identity, cancellationToken);
+
+                // Under TLS 1.3 the client's Certificate message arrives after the
+                // server's handshake completes, so read once before inspecting it.
+                var buffer = new byte[1];
+                await stream.ReadExactlyAsync(buffer, cancellationToken);
+
+                var remote = stream.RemoteCertificate;
+                if (remote is null)
+                {
+                    seen.TrySetException(new InvalidOperationException("The client sent no certificate."));
+                }
+                else
+                {
+                    seen.TrySetResult(X509CertificateLoader.LoadCertificate(remote.GetRawCertData()));
+                }
+            }
+            catch (Exception ex)
+            {
+                seen.TrySetException(ex);
+            }
+        }, cancellationToken);
+
+        return (listener, seen);
+    }
+
+    [Fact]
+    public void Client_selects_its_certificate_even_when_the_server_advertises_no_acceptable_issuers()
+    {
+        // Android's JSSE server sends a certificate_authorities list that cannot
+        // contain a self-signed issuer. .NET filters ClientCertificates against
+        // that list, so without an explicit selection callback it sends NO
+        // certificate and the peer - which requires one - stalls the handshake.
+        var identity = DeviceIdentity.CreateNew("Client");
+
+        var options = PinnedTls.CreateClientOptions(identity, _ => true);
+
+        var select = options.LocalCertificateSelectionCallback;
+        Assert.NotNull(select);
+
+        var selected = select(
+            sender: this,
+            targetHost: "slipstream",
+            localCertificates: new X509CertificateCollection(new X509Certificate[] { identity.Certificate }),
+            remoteCertificate: null,
+            acceptableIssuers: []); // no issuer the client could ever match
+
+        Assert.NotNull(selected);
+        Assert.Equal(identity.Fingerprint, Fingerprint.Of(selected.GetRawCertData()));
+    }
+
+    [Fact]
+    public async Task Client_sends_its_certificate_to_a_server_that_requires_one()
+    {
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+
+        var serverIdentity = DeviceIdentity.CreateNew("Server");
+        var clientIdentity = DeviceIdentity.CreateNew("Client");
+
+        var (listener, seenClientCert) = StartServerCapturingClientCertificate(serverIdentity, cts.Token);
+
+        try
+        {
+            using var tcp = new TcpClient();
+            await tcp.ConnectAsync((IPEndPoint)listener.LocalEndpoint, cts.Token);
+
+            await using var stream = await PinnedTls.AuthenticateAsClientAsync(
+                tcp.GetStream(), clientIdentity,
+                fingerprint => fingerprint == serverIdentity.Fingerprint, cts.Token);
+
+            // Give the server a byte to read so it can observe the certificate.
+            await stream.WriteAsync(new byte[] { 0x0a }, cts.Token);
+            await stream.FlushAsync(cts.Token);
+
+            var sent = await seenClientCert.Task.WaitAsync(cts.Token);
+            Assert.Equal(clientIdentity.Fingerprint, Fingerprint.Of(sent.GetRawCertData()));
+        }
+        finally
+        {
+            listener.Stop();
         }
     }
 }

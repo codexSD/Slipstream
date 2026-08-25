@@ -20,18 +20,37 @@ public static class PinnedTls
     {
         var stream = new SslStream(inner, leaveInnerStreamOpen: false);
 
-        await stream.AuthenticateAsClientAsync(new SslClientAuthenticationOptions
+        await stream.AuthenticateAsClientAsync(
+            CreateClientOptions(identity, acceptFingerprint), cancellationToken);
+
+        return stream;
+    }
+
+    /// <summary>
+    /// The client-side handshake options. Exposed separately so the certificate
+    /// selection behaviour can be asserted without a live peer.
+    /// </summary>
+    internal static SslClientAuthenticationOptions CreateClientOptions(
+        DeviceIdentity identity,
+        Func<string, bool> acceptFingerprint) =>
+        new()
         {
             TargetHost = "slipstream",
             ClientCertificates = [identity.Certificate],
+
+            // Android's JSSE sends a certificate_authorities list that cannot contain a
+            // self-signed issuer, so .NET's default selection logic sends NO client
+            // certificate and the peer - which requires one - stalls the handshake.
+            // Selecting unconditionally bypasses that filter. Safe here because there is
+            // exactly one certificate and exactly one peer; the trust decision is the
+            // fingerprint pin below, never the issuer list.
+            LocalCertificateSelectionCallback = (_, _, _, _, _) => identity.Certificate,
+
             EnabledSslProtocols = SslProtocols.Tls13 | SslProtocols.Tls12,
             CertificateRevocationCheckMode = X509RevocationMode.NoCheck,
             RemoteCertificateValidationCallback = (_, certificate, _, _) =>
                 certificate is not null && acceptFingerprint(Fingerprint.Of(certificate.GetRawCertData())),
-        }, cancellationToken);
-
-        return stream;
-    }
+        };
 
     public static async Task<SslStream> AuthenticateAsServerAsync(
         Stream inner,

@@ -1,23 +1,44 @@
 using System.Net;
+using System.Net.NetworkInformation;
+using System.Runtime.Versioning;
 using Slipstream.Core.Control;
+using Slipstream.Core.Control.Handlers;
 using Slipstream.Core.Discovery;
+using Slipstream.Core.Files;
 using Slipstream.Core.Identity;
+using Slipstream.Core.Media;
 using Slipstream.Core.Net;
+using Slipstream.Core.Platform;
+using Slipstream.Core.Transfer;
 
 namespace Slipstream.Core;
 
 /// <summary>
 /// Wires the six modules together. One instance per running app.
 /// </summary>
+/// <remarks>
+/// StartAsync constructs a <c>ThumbnailProvider</c>, <c>PlaylistLauncher</c>, and
+/// <c>SlipstreamSession</c> — each already <c>[SupportedOSPlatform("windows")]</c> —
+/// so this type carries the same guard rather than each internal call site repeating
+/// it. Slipstream.Core targets plain net9.0 (not net9.0-windows), so without this the
+/// platform-compatibility analyzer flags those constructions as CA1416 under this
+/// solution's TreatWarningsAsErrors.
+/// </remarks>
+[SupportedOSPlatform("windows")]
 public sealed class SlipstreamPeer : IAsyncDisposable
 {
+    private readonly string _stateDirectory;
     private readonly INetworkInfo _networkInfo = new NetworkInfo();
     private readonly MulticastStrategy _multicast;
     private readonly DiscoveryCoordinator _coordinator;
     private ControlServer? _server;
+    private BulkServer? _bulkServer;
+    private MediaServer? _mediaServer;
+    private TransferEngine? _engine;
 
     public SlipstreamPeer(string stateDirectory, string displayName)
     {
+        _stateDirectory = stateDirectory;
         Identity = DeviceIdentity.LoadOrCreate(stateDirectory, displayName);
         Peers = new PairedPeerStore(stateDirectory);
         Client = new ControlClient(Identity, Peers);
@@ -44,16 +65,68 @@ public sealed class SlipstreamPeer : IAsyncDisposable
 
     public LocalNetwork? Network => _networkInfo.Current();
 
+    // New init-only configuration, defaulted so existing callers are unaffected.
+    public IPAddress? BindAddress { get; init; }
+    public string DownloadDirectory { get; init; } = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads", "Slipstream");
+    public bool UseEphemeralPorts { get; init; }
+    public int StreamCount { get; init; } = 4;
+
+    public TokenVault Tokens { get; } = new();
+    public BulkServer BulkServer => _bulkServer ?? throw new InvalidOperationException("Call StartAsync first.");
+    public MediaServer MediaServer => _mediaServer ?? throw new InvalidOperationException("Call StartAsync first.");
+    public TransferEngine Engine => _engine ?? throw new InvalidOperationException("Call StartAsync first.");
+
+    /// <summary>Raised whenever discovery must run again — spec §5 network-change handling.</summary>
+    public event Action? NetworkChanged;
+
     /// <summary>Starts the listener and the multicast query responder.</summary>
     public Task StartAsync(CancellationToken cancellationToken)
     {
         var network = _networkInfo.Current()
             ?? throw new InvalidOperationException("No local network is available.");
 
-        _server = new ControlServer(Identity, Peers, network.LocalAddress, SlipstreamPorts.Control);
+        // Every server binds the same address, and every port becomes ephemeral
+        // together under UseEphemeralPorts — running two peers in one process (as
+        // every test in this suite does) would otherwise collide on the fixed
+        // control port the moment a second SlipstreamPeer starts.
+        var bind = BindAddress ?? network.LocalAddress;
+
+        _server = new ControlServer(Identity, Peers, bind, UseEphemeralPorts ? 0 : SlipstreamPorts.Control);
+        _bulkServer = new BulkServer(Tokens, bind, UseEphemeralPorts ? 0 : SlipstreamPorts.Bulk);
+        _mediaServer = new MediaServer(Tokens, bind, UseEphemeralPorts ? 0 : SlipstreamPorts.Media);
+
+        var thumbnails = new ThumbnailProvider(Path.Combine(_stateDirectory, "thumbnails"), Tokens);
+        _mediaServer.ThumbnailResolver = thumbnails.Resolve;
+
+        var session = new SlipstreamSession(
+            Identity, new FileBrowser(), Tokens, _mediaServer, thumbnails,
+            new PlaylistLauncher(Path.Combine(Path.GetTempPath(), "slipstream")),
+            bind, StreamCount);
+
+        _engine = new TransferEngine(Client, new BulkClient(), DownloadDirectory, StreamCount);
+
+        // Every inbound control connection is pumped through the session dispatcher.
+        _server.PeerConnected += async (connection, token) =>
+        {
+            while (await connection.ReceiveAsync(token) is { } message)
+            {
+                var reply = await session.HandleAsync(message, token);
+                if (reply is not null) await connection.SendAsync(reply, token);
+            }
+        };
+
+        // Spec §5: a network switch is routine. Tear down, rediscover, resume.
+        // (The event lives on NetworkChange, not NetworkInterface.)
+        NetworkChange.NetworkAddressChanged += (_, _) => NetworkChanged?.Invoke();
+
+        // Spec §7: sweep orphaned .part files on start.
+        PartFile.CollectStale(DownloadDirectory, TimeSpan.FromDays(7));
 
         return Task.WhenAll(
             _server.RunAsync(cancellationToken),
+            _bulkServer.RunAsync(cancellationToken),
+            _mediaServer.RunAsync(cancellationToken),
             _multicast.RespondToQueriesAsync(cancellationToken));
     }
 
@@ -66,6 +139,8 @@ public sealed class SlipstreamPeer : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         if (_server is not null) await _server.DisposeAsync();
+        if (_bulkServer is not null) await _bulkServer.DisposeAsync();
+        if (_mediaServer is not null) await _mediaServer.DisposeAsync();
         await _multicast.DisposeAsync();
     }
 }

@@ -1,0 +1,99 @@
+using System.Net;
+using Slipstream.Core.Control;
+using Slipstream.Core.Control.Handlers;
+
+namespace Slipstream.Core.Transfer;
+
+/// <summary>
+/// Spec §7 orchestration: ask over the control channel, pull over the bulk channel,
+/// verify, complete. Resume is inherited from PartFile, so a retry after any
+/// interruption continues rather than restarts.
+/// </summary>
+// `client` is part of the constructor shape the plan specifies (and matches how every
+// other collaborator here is passed in), but PullAsync always receives an
+// already-connected ControlConnection explicitly, so nothing in this type reads it.
+#pragma warning disable CS9113 // Parameter is unread.
+public sealed class TransferEngine(
+    ControlClient client, BulkClient bulk, string downloadDirectory, int streamCount)
+#pragma warning restore CS9113
+{
+    public async Task<string> PullAsync(
+        ControlConnection control,
+        IPEndPoint peerEndpoint,
+        string remotePath,
+        IProgress<TransferProgress>? progress,
+        CancellationToken cancellationToken)
+    {
+        var requestId = Guid.NewGuid().ToString("N")[..8];
+        await control.SendAsync(ControlMessage.Request("pull.request", requestId, new PullRequest(remotePath)), cancellationToken);
+
+        var reply = await AwaitReplyAsync(control, requestId, cancellationToken);
+
+        if (reply.Type != "pull.ok")
+            throw new ControlProtocolException(
+                reply.PayloadAs<ErrorResponse>()?.Message ?? "The peer refused the transfer.");
+
+        var response = reply.PayloadAs<PullResponse>()
+            ?? throw new ControlProtocolException("The peer sent a malformed transfer response.");
+
+        Directory.CreateDirectory(downloadDirectory);
+
+        var transferId = Guid.Parse(response.TransferId);
+        var token = Guid.Parse(response.Token);
+        var destination = Path.Combine(downloadDirectory, response.Name);
+
+        await using var part = PartFile.OpenOrCreate(destination, transferId, response.Size, response.ChunkSize);
+
+        try
+        {
+            await bulk.DownloadAsync(
+                peerEndpoint, transferId, token, part,
+                Math.Min(streamCount, response.Streams), progress, cancellationToken);
+        }
+        catch (Exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            // One reconnect-and-resume attempt. The bitmap means we continue from
+            // where we stopped rather than starting over. A fresh pull.request mints
+            // a new transfer id alongside its token — the id on the wire exists only
+            // to authenticate the bulk socket against the token the server just
+            // issued, so both must come from the same reply. PartFile's bitmap is
+            // already open and keeps tracking progress from the byte it stopped at
+            // regardless of which transfer id labels the retry.
+            var (retryTransferId, retryToken) = await RequestFreshTokenAsync(control, remotePath, cancellationToken);
+
+            await bulk.DownloadAsync(
+                peerEndpoint, retryTransferId, retryToken, part,
+                Math.Min(streamCount, response.Streams), progress, cancellationToken);
+        }
+
+        if (!await part.CompleteAsync(cancellationToken))
+            throw new ControlProtocolException("The transfer finished with chunks still missing.");
+
+        return destination;
+    }
+
+    private static async Task<(Guid TransferId, Guid Token)> RequestFreshTokenAsync(
+        ControlConnection control, string remotePath, CancellationToken cancellationToken)
+    {
+        var requestId = Guid.NewGuid().ToString("N")[..8];
+        await control.SendAsync(ControlMessage.Request("pull.request", requestId, new PullRequest(remotePath)), cancellationToken);
+
+        var reply = await AwaitReplyAsync(control, requestId, cancellationToken);
+        var response = reply.PayloadAs<PullResponse>()
+            ?? throw new ControlProtocolException("The peer sent a malformed transfer response.");
+
+        return (Guid.Parse(response.TransferId), Guid.Parse(response.Token));
+    }
+
+    private static async Task<ControlMessage> AwaitReplyAsync(
+        ControlConnection control, string requestId, CancellationToken cancellationToken)
+    {
+        while (await control.ReceiveAsync(cancellationToken) is { } message)
+        {
+            if (message.Id == requestId) return message;
+            // Events and other replies interleave freely; keep reading.
+        }
+
+        throw new ControlProtocolException("The peer closed the connection before replying.");
+    }
+}

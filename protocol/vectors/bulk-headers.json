@@ -1,0 +1,31 @@
+{
+  "description": "Canonical bulk stream frame headers. 64-byte headers with big-endian encoding.",
+  "cases": [
+    {
+      "name": "first-stream-1mb-range",
+      "fields": {
+        "transferId": "ffeeddccbbaa99887766554433221100",
+        "token": "0102030405060708090a0b0c0d0e0f10",
+        "rangeStart": 0,
+        "version": 1,
+        "chunkSize": 65536,
+        "rangeLength": 1048576,
+        "streamIndex": 0
+      },
+      "bytes": "534c5053000100000102030405060708090a0b0c0d0e0f10ffeeddccbbaa99887766554433221100000000000000000000000000001000000001000000000000"
+    },
+    {
+      "name": "third-stream-offset-range",
+      "fields": {
+        "transferId": "0f0e0d0c0b0a09080706050403020100",
+        "token": "ffeeddccbbaa99887766554433221100",
+        "rangeStart": 2097152,
+        "version": 1,
+        "chunkSize": 1048576,
+        "rangeLength": 3145728,
+        "streamIndex": 2
+      },
+      "bytes": "534c505300010002ffeeddccbbaa998877665544332211000f0e0d0c0b0a09080706050403020100000000000020000000000000003000000010000000000000"
+    }
+  ]
+}

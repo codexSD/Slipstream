@@ -195,7 +195,7 @@ tested (Tasks 4–5, 16).
 
 ## 8. Out of scope here (specified in the design document, implemented in Plan 2)
 
-- Bulk transfer (`list` / `stat` / `pull` / `push`) — spec §7, ports `53322`.
+- **Bulk transfer (53322):** see [`bulk-format.md`](bulk-format.md). Normative.
 - Media server and thumbnails — spec §8–§9, port `53323`.
 - `play` and `clipboard` message handlers — spec §6.
 - Discovery re-run on network change (needs a live connection to tear down).

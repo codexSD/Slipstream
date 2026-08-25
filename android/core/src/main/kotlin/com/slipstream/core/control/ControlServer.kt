@@ -1,0 +1,95 @@
+package com.slipstream.core.control
+
+import com.slipstream.core.SlipstreamPorts
+import com.slipstream.core.identity.DeviceIdentity
+import com.slipstream.core.identity.Fingerprint
+import com.slipstream.core.identity.PairedPeerStore
+import com.slipstream.core.net.LanGuard
+import com.slipstream.core.net.NetworkInfo
+import java.net.InetSocketAddress
+import java.security.cert.X509Certificate
+import javax.net.ssl.SSLServerSocket
+import javax.net.ssl.SSLSocket
+import kotlin.concurrent.thread
+
+/**
+ * Server side of the control channel (protocol.md §4, §9). Binds only to the current local
+ * network's own address (never `0.0.0.0`), requires a client certificate but accepts *any*
+ * certificate at the raw TLS layer, and only after the handshake completes compares the
+ * accepted connection's peer fingerprint against [peerStore] — a mismatch is dropped
+ * immediately, before [onPeerConnected] (and therefore any application code) ever sees it.
+ * Inbound remote addresses are also checked against [LanGuard] before the handshake starts.
+ */
+class ControlServer(
+    private val identity: DeviceIdentity,
+    private val peerStore: PairedPeerStore,
+    private val networkInfo: NetworkInfo,
+    port: Int = SlipstreamPorts.CONTROL,
+) : AutoCloseable {
+
+    /** Invoked (on a background thread) for each connection that passes LanGuard, the TLS
+     * handshake, and the post-handshake fingerprint check. */
+    var onPeerConnected: ((ControlConnection) -> Unit)? = null
+
+    private val bindAddress = networkInfo.current()?.localAddress
+        ?: throw IllegalStateException("No local network available to bind the control server to")
+
+    private val serverSocket: SSLServerSocket =
+        (PinnedTls.serverSocketFactory(identity).createServerSocket() as SSLServerSocket).apply {
+            needClientAuth = true
+            bind(InetSocketAddress(bindAddress, port))
+        }
+
+    /** The actual bound address+port, useful when constructed with `port = 0`. */
+    val listenEndpoint: InetSocketAddress
+        get() = InetSocketAddress(bindAddress, serverSocket.localPort)
+
+    @Volatile
+    private var running = true
+
+    private val acceptThread = thread(name = "ControlServer-accept", isDaemon = true) { acceptLoop() }
+
+    private fun acceptLoop() {
+        while (running) {
+            val socket = try {
+                serverSocket.accept() as SSLSocket
+            } catch (e: Exception) {
+                if (running) continue else break
+            }
+            thread(name = "ControlServer-conn", isDaemon = true) { handleConnection(socket) }
+        }
+    }
+
+    private fun handleConnection(socket: SSLSocket) {
+        try {
+            // Layer 2: refuse a non-local remote address before the handshake even starts.
+            if (!LanGuard.isLocal(socket.inetAddress)) {
+                socket.close()
+                return
+            }
+
+            // TLS layer accepts any certificate; the real trust decision is the fingerprint
+            // check below, which runs only after the handshake has fully completed.
+            socket.startHandshake()
+
+            val clientCert = socket.session.peerCertificates.firstOrNull() as? X509Certificate
+            val fingerprint = clientCert?.let { Fingerprint.of(it) }
+            val trusted = peerStore.peer?.fingerprint
+
+            if (fingerprint == null || trusted == null || fingerprint != trusted) {
+                socket.close()
+                return
+            }
+
+            onPeerConnected?.invoke(ControlConnection(socket))
+        } catch (e: Exception) {
+            try { socket.close() } catch (_: Exception) {}
+        }
+    }
+
+    override fun close() {
+        running = false
+        try { serverSocket.close() } catch (_: Exception) {}
+        acceptThread.interrupt()
+    }
+}

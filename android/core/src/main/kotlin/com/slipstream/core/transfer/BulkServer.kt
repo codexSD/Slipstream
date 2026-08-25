@@ -51,6 +51,7 @@ class BulkServer(
             if (header.version.toInt() != 1) return
             val token = tokenVault.validate(header.token, header.transferId) ?: return
             val file = fileForTransfer(header.transferId) ?: return
+            if (token.sourcePath != file.path) return
 
             val output = DataOutputStream(socket.getOutputStream())
             RandomAccessFile(file, "r").use { raf ->

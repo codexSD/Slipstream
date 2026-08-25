@@ -233,6 +233,35 @@ class BulkTransferIoTest {
     }
 
     @Test
+    fun `a token issued for a different path is refused with no reply`() {
+        // TokenVault scopes a token to one transfer id AND one source path. Issue a token
+        // claiming a different path than the one fileForTransfer actually resolves for this
+        // transferId, and confirm the server refuses it the same way it refuses a bad header.
+        sourceData = Random(8).nextBytes(3 * SMALL_CHUNK)
+        source.writeBytes(sourceData)
+        startServer()
+        val token = vault.issueBulk(transferId, source.path + ".wrong", sourceData.size.toLong(), expectedStreams = 1)
+
+        val header = BulkFrameHeader(
+            version = 1u,
+            streamIndex = 0u,
+            token = token.value,
+            transferId = transferId,
+            rangeStart = 0L,
+            rangeLength = sourceData.size.toLong(),
+            chunkSize = SMALL_CHUNK,
+        )
+        java.net.Socket().use { socket ->
+            socket.connect(serverEndpoint, 5000)
+            socket.getOutputStream().write(header.toBytes())
+            socket.getOutputStream().flush()
+            socket.soTimeout = 2000
+            val read = socket.getInputStream().read()
+            assertEquals(-1, read) // peer closed with no reply
+        }
+    }
+
+    @Test
     fun `downloads a small file end to end`() {
         val chunkSize = SMALL_CHUNK
         sourceData = Random(7).nextBytes(3 * chunkSize)

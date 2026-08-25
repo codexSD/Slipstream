@@ -28,7 +28,7 @@ public interface IPeerHost
     event Action<PeerConnectionState, string?, string?>? StateChanged;
     Task StartAsync(CancellationToken ct);
     Task<bool> ReconnectAsync(CancellationToken ct);
-    Task<IReadOnlyList<FileEntry>> ListAsync(string path, CancellationToken ct);
+    Task<ListResult> ListAsync(string path, CancellationToken ct);
     Task<string> PullAsync(string remotePath, IProgress<TransferProgress>? progress, CancellationToken ct);
     Task StreamAsync(string remotePath, CancellationToken ct);
     Task SendClipboardAsync(string text, CancellationToken ct);

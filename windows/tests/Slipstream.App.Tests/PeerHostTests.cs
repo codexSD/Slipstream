@@ -49,7 +49,7 @@ public class PeerHostTests : IAsyncLifetime
         await host.StartAsync(_cts.Token);
 
         Assert.Equal(PeerConnectionState.Connected, host.State);
-        Assert.NotEmpty(await host.ListAsync(_sharedDir, _cts.Token));
+        Assert.NotEmpty((await host.ListAsync(_sharedDir, _cts.Token)).Entries);
     }
 
     [Fact]
@@ -105,7 +105,7 @@ public class PeerHostTests : IAsyncLifetime
         for (var i = 0; i < 4 && !pullTask.IsCompleted; i++)
         {
             var sw = Stopwatch.StartNew();
-            Assert.NotEmpty(await host.ListAsync(_sharedDir, _cts.Token));
+            Assert.NotEmpty((await host.ListAsync(_sharedDir, _cts.Token)).Entries);
             sw.Stop();
 
             Assert.True(sw.Elapsed < TimeSpan.FromSeconds(2),

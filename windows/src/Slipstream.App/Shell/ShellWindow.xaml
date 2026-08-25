@@ -122,8 +122,9 @@
                             </local:DestinationTemplateSelector.DeviceTemplate>
                             <local:DestinationTemplateSelector.BrowsePhoneTemplate>
                                 <DataTemplate>
-                                    <TextBlock Text="Browse phone — placeholder, replaced by a later task."
-                                               Style="{StaticResource MeridianBodyStyle}" />
+                                    <!-- Same pattern as DeviceTemplate: BrowsePage needs its
+                                         IPeerHost injected at construction. -->
+                                    <ContentPresenter Content="{StaticResource BrowsePageContent}" />
                                 </DataTemplate>
                             </local:DestinationTemplateSelector.BrowsePhoneTemplate>
                             <local:DestinationTemplateSelector.TransfersTemplate>

@@ -29,8 +29,8 @@ internal sealed class NoOpPeerHost : IPeerHost
 
     public Task<bool> ReconnectAsync(CancellationToken ct) => Task.FromResult(false);
 
-    public Task<IReadOnlyList<FileEntry>> ListAsync(string path, CancellationToken ct)
-        => Task.FromResult<IReadOnlyList<FileEntry>>([]);
+    public Task<ListResult> ListAsync(string path, CancellationToken ct)
+        => Task.FromResult(new ListResult(path, [], false));
 
     public Task<string> PullAsync(string remotePath, IProgress<TransferProgress>? progress, CancellationToken ct)
         => Task.FromResult(string.Empty);

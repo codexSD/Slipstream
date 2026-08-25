@@ -96,7 +96,7 @@ public sealed class PeerHost : IPeerHost, IAsyncDisposable
         }
     }
 
-    public async Task<IReadOnlyList<FileEntry>> ListAsync(string path, CancellationToken ct)
+    public async Task<ListResult> ListAsync(string path, CancellationToken ct)
     {
         var reply = await SendRequestAsync("list", new ListRequest(path, null), ct);
 
@@ -106,7 +106,7 @@ public sealed class PeerHost : IPeerHost, IAsyncDisposable
         var response = reply.PayloadAs<ListResponse>()
             ?? throw new ControlProtocolException("The peer sent a malformed listing.");
 
-        return response.Entries;
+        return new ListResult(response.Path, response.Entries, response.Truncated);
     }
 
     public async Task<string> PullAsync(string remotePath, IProgress<TransferProgress>? progress, CancellationToken ct)

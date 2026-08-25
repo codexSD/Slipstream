@@ -28,6 +28,13 @@ public sealed class FakePeerHost : IPeerHost
     /// the peer (derivation itself is Slipstream.Core's concern, not this fake's).</summary>
     public string PairingCode { get; set; } = "000000";
 
+    /// <summary>What <see cref="ListAsync"/> returns. Tests set this to drive Browse-page
+    /// scenarios (entries, truncation, or a thrown failure).</summary>
+    public Func<string, ListResult> ListResultFactory { get; set; } = path => new ListResult(path, [], false);
+
+    /// <summary>When set, <see cref="ListAsync"/> throws this instead of returning a result.</summary>
+    public Exception? ListFailure { get; set; }
+
     public void RaiseState(PeerConnectionState state, string? peerName, string? band = null)
     {
         State = state;
@@ -47,8 +54,10 @@ public sealed class FakePeerHost : IPeerHost
 
     public Task<bool> ReconnectAsync(CancellationToken ct) => Task.FromResult(true);
 
-    public Task<IReadOnlyList<FileEntry>> ListAsync(string path, CancellationToken ct)
-        => Task.FromResult<IReadOnlyList<FileEntry>>([]);
+    public Task<ListResult> ListAsync(string path, CancellationToken ct)
+        => ListFailure is not null
+            ? Task.FromException<ListResult>(ListFailure)
+            : Task.FromResult(ListResultFactory(path));
 
     public Task<string> PullAsync(string remotePath, IProgress<TransferProgress>? progress, CancellationToken ct)
         => Task.FromResult(string.Empty);

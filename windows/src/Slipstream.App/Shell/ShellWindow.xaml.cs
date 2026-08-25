@@ -35,6 +35,7 @@ public sealed partial class ShellWindow : Window
         // constructor arguments, so the one DevicePage instance is built here (where the
         // injected peerHost is in scope) and hosted by name from the resource dictionary.
         RootGrid.Resources["DevicePageContent"] = new Pages.DevicePage(peerHost);
+        RootGrid.Resources["BrowsePageContent"] = new Pages.BrowsePage(peerHost);
 
         ExtendsContentIntoTitleBar = true;
         SetTitleBar(AppTitleBar);

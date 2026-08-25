@@ -1,6 +1,9 @@
 using Slipstream.App.Pages;
 using Slipstream.App.Services;
 using Slipstream.App.Tests.Fakes;
+using Slipstream.Core.Files;
+using Slipstream.Core.Identity;
+using Slipstream.Core.Transfer;
 using Xunit;
 
 namespace Slipstream.App.Tests;
@@ -57,6 +60,95 @@ public class DeviceViewModelTests
         host.RaiseState(PeerConnectionState.Connected, "Kai's iPhone");
 
         Assert.Equal("—", vm.HeroRateText);
+    }
+
+    [Fact]
+    public async Task Hero_rate_updates_when_TransferQueue_reports_progress_from_a_background_thread()
+    {
+        // TransferQueue.ItemUpdated (see TransferQueue.RunAsync) fires from whatever thread
+        // is running the transfer's Task, never the UI thread. DeviceViewModel's
+        // OnTransferUpdated must marshal through RunOnUiThread (matching TransfersViewModel's
+        // established pattern) before touching HeroRateText, an observable UI-bound property.
+        // A real DispatcherQueue can't be constructed headless under `dotnet test` (Tasks
+        // 5/7/8's COMException findings), so this test can't observe the marshal itself — with
+        // no dispatcher supplied, DeviceViewModel falls back to DispatcherQueue.GetForCurrentThread(),
+        // which is null off a real UI thread, and RunOnUiThread's null-dispatcher branch runs the
+        // action inline (see TransfersViewModel.RunOnUiThread, the identical, already-shipped
+        // pattern this mirrors). What this test does verify: the callback reaches
+        // DeviceViewModel correctly and safely from a genuine background thread — i.e. nothing
+        // about the new wiring assumes it's already on the UI thread — and that HeroRateText
+        // ends up reflecting the reported rate.
+        var host = new BlockingPullPeerHost();
+        var queue = new TransferQueue(host, maxConcurrent: 1);
+        var vm = new DeviceViewModel(host, queue);
+
+        queue.Enqueue("/DCIM/100APPLE/IMG_0001.HEIC");
+        await host.RunningOnBackgroundThread.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        host.ReportProgressFromBackgroundThread(new TransferProgress(Guid.Empty, 1L << 20, 4L << 20, 2 * 1024 * 1024));
+
+        // Progress<T> marshals its callback (via a captured SynchronizationContext, or the
+        // ThreadPool absent one) rather than invoking it synchronously on Report(), so poll
+        // briefly instead of asserting immediately after the call returns.
+        var expected = Slipstream.App.Services.TransferItem.FormatRate(2 * 1024 * 1024);
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+        while (vm.HeroRateText != expected && DateTime.UtcNow < deadline)
+            await Task.Delay(10);
+
+        Assert.Equal(expected, vm.HeroRateText);
+
+        host.Release();
+        await queue.WaitForIdleAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    /// <summary>Test double whose <see cref="PullAsync"/> blocks on a background <see cref="Task"/>
+    /// until <see cref="Release"/> is called, so tests can report progress mid-transfer from a
+    /// genuine non-UI thread (proving DeviceViewModel's marshal path is exercised, not just
+    /// compiled).</summary>
+    private sealed class BlockingPullPeerHost : IPeerHost
+    {
+        private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private IProgress<TransferProgress>? _progress;
+
+        public TaskCompletionSource RunningOnBackgroundThread { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public PeerConnectionState State => PeerConnectionState.Connected;
+        public string? PeerName => "Fake Peer";
+        public string? Band => null;
+        public string? DiscoveryStrategy => null;
+        public TimeSpan? DiscoveryElapsed => null;
+
+        public event Action<PeerConnectionState, string?, string?>? StateChanged { add { } remove { } }
+
+        public Task StartAsync(CancellationToken ct) => Task.CompletedTask;
+        public Task<bool> ReconnectAsync(CancellationToken ct) => Task.FromResult(true);
+        public Task<ListResult> ListAsync(string path, CancellationToken ct) => Task.FromResult(new ListResult(path, [], false));
+        public Task StreamAsync(string remotePath, CancellationToken ct) => Task.CompletedTask;
+        public Task SendClipboardAsync(string text, CancellationToken ct) => Task.CompletedTask;
+
+        public Task<PairedPeer?> PairAsync(Func<string, CancellationToken, Task<bool>> confirm, CancellationToken ct)
+            => Task.FromResult<PairedPeer?>(null);
+
+        public async Task<string> PullAsync(string remotePath, IProgress<TransferProgress>? progress, CancellationToken ct)
+        {
+            _progress = progress;
+            // Runs on a ThreadPool thread, never the caller's — same as the real PullAsync
+            // implementation, and definitely never the (nonexistent, in this test) UI thread.
+            await Task.Run(() =>
+            {
+                Assert.False(RunningOnBackgroundThread.Task.IsCompleted);
+                RunningOnBackgroundThread.SetResult();
+                _release.Task.Wait();
+            });
+            return remotePath;
+        }
+
+        /// <summary>Invokes the progress callback from the calling (background) thread, exactly
+        /// as Core's real progress reporting does inside TransferQueue.RunAsync.</summary>
+        public void ReportProgressFromBackgroundThread(TransferProgress progress)
+            => _progress?.Report(progress);
+
+        public void Release() => _release.TrySetResult();
     }
 
     [Fact]

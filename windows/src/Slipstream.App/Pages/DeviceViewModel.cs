@@ -1,4 +1,6 @@
+using System.Runtime.InteropServices;
 using CommunityToolkit.Mvvm.ComponentModel;
+using Microsoft.UI.Dispatching;
 using Slipstream.App.Services;
 
 namespace Slipstream.App.Pages;
@@ -15,8 +17,11 @@ public sealed record DiscoveryStrategyRow(string Code, string Name, bool IsWinne
 /// <see cref="HeroRateText"/> now reflects the live aggregate rate of whatever
 /// <see cref="TransferQueue"/> is currently running (Task 12), when one is supplied — summed
 /// across every <see cref="TransferQueue.Active"/> item and refreshed on each
-/// <see cref="TransferQueue.ItemUpdated"/>. When no queue is supplied (or nothing is running)
-/// it falls back to "—". <see cref="LinkRateText"/> and <see cref="TransferredTodayText"/>
+/// <see cref="TransferQueue.ItemUpdated"/>, which fires from a background thread inside
+/// <see cref="TransferQueue.RunAsync"/> and is marshaled back onto the UI thread via
+/// <see cref="DispatcherQueue"/> before <see cref="HeroRateText"/> is touched (same mechanism
+/// <c>TransfersViewModel</c> uses for its throttled grid updates). When no queue is supplied
+/// (or nothing is running) it falls back to "—". <see cref="LinkRateText"/> and <see cref="TransferredTodayText"/>
 /// still show the resting placeholder "—": no per-day-transferred-bytes aggregate exists yet
 /// (no history/stats store), and link rate is a different, still-unavailable measurement (the
 /// negotiated/PHY rate, not a transfer's observed throughput). Those remain a documented gap.
@@ -42,6 +47,7 @@ public sealed partial class DeviceViewModel : ObservableObject
 
     private readonly IPeerHost _peerHost;
     private readonly TransferQueue? _transferQueue;
+    private readonly DispatcherQueue? _dispatcher;
 
     private string _linkRateText = "—";
     private string _transferredTodayText = "—";
@@ -92,11 +98,12 @@ public sealed partial class DeviceViewModel : ObservableObject
         set => SetProperty(ref _discoverySummaryText, value);
     }
 
-    public DeviceViewModel(IPeerHost peerHost, TransferQueue? transferQueue = null)
+    public DeviceViewModel(IPeerHost peerHost, TransferQueue? transferQueue = null, DispatcherQueue? dispatcher = null)
     {
         ArgumentNullException.ThrowIfNull(peerHost);
         _peerHost = peerHost;
         _transferQueue = transferQueue;
+        _dispatcher = dispatcher ?? TryGetCurrentDispatcher();
 
         _discoveryStrategies = BuildStrategyRows();
         Refresh(peerHost.State, peerHost.PeerName);
@@ -109,17 +116,44 @@ public sealed partial class DeviceViewModel : ObservableObject
     private void OnPeerStateChanged(PeerConnectionState state, string? peerName, string? band)
         => Refresh(state, peerName);
 
-    private void OnTransferUpdated(TransferItem item) => RefreshHeroRate();
+    // TransferQueue.ItemUpdated fires from a background thread inside TransferQueue.RunAsync
+    // (see its class remarks), so the resulting HeroRateText mutation must be marshaled onto
+    // the UI thread — mirrors TransfersViewModel's RunOnUiThread helper.
+    private void OnTransferUpdated(TransferItem item) => RunOnUiThread(RefreshHeroRate);
 
     /// <summary>Sums <see cref="BytesPerSecond"/> across every currently-running transfer.
-    /// Not marshaled to the UI thread — see the class remarks on TransferQueue.ItemUpdated;
-    /// this mirrors the same not-yet-dispatched gap as <see cref="OnPeerStateChanged"/>.</summary>
+    /// Callers must already be on the UI thread — see <see cref="OnTransferUpdated"/>.</summary>
     private void RefreshHeroRate()
     {
         if (_transferQueue is null) return;
 
         var totalRate = _transferQueue.Active.Sum(t => t.BytesPerSecond);
         HeroRateText = totalRate > 0 ? TransferItem.FormatRate(totalRate) : "—";
+    }
+
+    private void RunOnUiThread(Action action)
+    {
+        if (_dispatcher is null || _dispatcher.HasThreadAccess)
+            action();
+        else
+            _dispatcher.TryEnqueue(() => action());
+    }
+
+    /// <summary>Wraps <see cref="DispatcherQueue.GetForCurrentThread"/>, which throws a
+    /// COMException off a real UI thread (e.g. under headless `dotnet test`, per Tasks
+    /// 5/7/8's findings) rather than returning null the way its name implies. Falling back to
+    /// null here is safe: <see cref="RunOnUiThread"/> already treats a null dispatcher as "run
+    /// inline", the same fallback WinUI code hits when constructed off-thread.</summary>
+    private static DispatcherQueue? TryGetCurrentDispatcher()
+    {
+        try
+        {
+            return DispatcherQueue.GetForCurrentThread();
+        }
+        catch (COMException)
+        {
+            return null;
+        }
     }
 
     private void Refresh(PeerConnectionState state, string? peerName)

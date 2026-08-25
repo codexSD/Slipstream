@@ -123,4 +123,31 @@ public class PeerHostTests : IAsyncLifetime
         }
         Assert.Equal(PeerConnectionState.Connected, host.State);
     }
+
+    [Fact]
+    public async Task A_network_change_tears_down_rediscovers_and_resumes()
+    {
+        // spec §5: a network change is routine, never an error state — the transfer must
+        // finish, not fail.
+        var largeFile = Path.Combine(_sharedDir, "large.bin");
+        var payload = new byte[80 * 1024 * 1024]; // large enough to still be in flight when we break the link.
+        Random.Shared.NextBytes(payload);
+        await File.WriteAllBytesAsync(largeFile, payload, _cts.Token);
+
+        // PeerHost.PullAsync hardcodes SlipstreamPorts.Bulk for the remote bulk endpoint,
+        // so the server side needs to bind that well-known port for the download to work.
+        await using var rig = await TwoPeers.StartAsync(_dir, _cts.Token, serverUsesFixedPorts: true);
+        await using var host = new PeerHost(rig.Client, _downloads);
+        await host.StartAsync(_cts.Token);
+
+        var transfer = host.PullAsync(largeFile, null, _cts.Token);
+
+        await rig.BreakControlConnectionAsync();
+        rig.Client.RaiseNetworkChanged(); // what NetworkChange delivers in production
+
+        var local = await transfer;
+
+        Assert.Equal(payload, await File.ReadAllBytesAsync(local, _cts.Token));
+        Assert.Equal(PeerConnectionState.Connected, host.State);
+    }
 }

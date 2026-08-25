@@ -33,17 +33,28 @@ public sealed class PeerHost : IPeerHost, IAsyncDisposable
     private static readonly TimeSpan ConnectTimeout = TimeSpan.FromSeconds(8);
     private static readonly TimeSpan HeartbeatInterval = TimeSpan.FromMilliseconds(750);
     private static readonly TimeSpan HeartbeatReplyTimeout = TimeSpan.FromSeconds(3);
+    private static readonly TimeSpan MinReconnectBackoff = TimeSpan.FromSeconds(1);
+    private static readonly TimeSpan MaxReconnectBackoff = TimeSpan.FromSeconds(15);
+    private const int MaxResumeAttempts = 40;
+    private static readonly TimeSpan ResumeRetryDelay = TimeSpan.FromMilliseconds(500);
+    private static readonly TimeSpan NetworkChangeQuietPeriod = TimeSpan.FromSeconds(1);
 
     private readonly SlipstreamPeer _peer;
     private readonly string _downloadDirectory;
     private readonly SemaphoreSlim _gate = new(1, 1);
+    // Serialises ReconnectAsync itself: it can be entered both by a caller driving recovery
+    // directly and by the NetworkChanged-driven loop, and interleaving two DropConnectionAsync
+    // / ConnectAsync sequences would tear down a connection the other one just brought up.
+    private readonly SemaphoreSlim _reconnectGate = new(1, 1);
     private readonly CancellationTokenSource _lifetime = new();
 
     private ControlConnection? _connection;
     private Task? _peerRunTask;
     private Task? _heartbeatTask;
+    private Task? _networkChangeTask;
     private bool _started;
     private bool _disposed;
+    private int _handlingNetworkChange;
 
     public PeerHost(SlipstreamPeer peer, string downloadDirectory)
     {
@@ -77,6 +88,7 @@ public sealed class PeerHost : IPeerHost, IAsyncDisposable
         if (_started) return;
         _started = true;
 
+        _peer.NetworkChanged += OnNetworkChanged;
         _peerRunTask = RunPeerAsync();
 
         // Give the listener/discovery loops a moment to bind before we start probing.
@@ -91,18 +103,31 @@ public sealed class PeerHost : IPeerHost, IAsyncDisposable
     {
         if (IsDiscoveryPaused) return false;
 
-        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, _lifetime.Token);
-        await DropConnectionAsync();
-
+        await _reconnectGate.WaitAsync(ct);
         try
         {
-            await ConnectAsync(linked.Token);
-            return State == PeerConnectionState.Connected;
+            // Already reconnected by whoever held the gate before us (e.g. the
+            // NetworkChanged loop winning a race against a caller-driven reconnect) —
+            // nothing left to do, and re-entering would tear down the fresh connection.
+            if (State == PeerConnectionState.Connected) return true;
+
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, _lifetime.Token);
+            await DropConnectionAsync();
+
+            try
+            {
+                await ConnectAsync(linked.Token);
+                return State == PeerConnectionState.Connected;
+            }
+            catch (Exception) when (!ct.IsCancellationRequested)
+            {
+                SetState(PeerConnectionState.Lost);
+                return false;
+            }
         }
-        catch (Exception) when (!ct.IsCancellationRequested)
+        finally
         {
-            SetState(PeerConnectionState.Lost);
-            return false;
+            _reconnectGate.Release();
         }
     }
 
@@ -121,16 +146,18 @@ public sealed class PeerHost : IPeerHost, IAsyncDisposable
 
     public async Task<string> PullAsync(string remotePath, IProgress<TransferProgress>? progress, CancellationToken ct)
     {
-        var connection = _connection ?? throw new InvalidOperationException("Not connected.");
-        var endpoint = new IPEndPoint(connection.RemoteEndPoint.Address, SlipstreamPorts.Bulk);
-
         // Only the pull.request/pull.ok round trip touches the shared control wire, so
         // only that round trip is serialised behind _gate (via SendRequestAsync below).
         // The bulk byte transfer runs over its own socket on SlipstreamPorts.Bulk and
         // must NOT hold the gate — otherwise a multi-second transfer would starve the
         // heartbeat loop's ping, whose 3s timeout would flip State to Lost and would
         // also block unrelated calls like ListAsync for the whole transfer duration.
-        var (transferId, token, streams, part) = await RequestTransferAsync(remotePath, ct);
+        //
+        // The handshake itself races the network: a change (spec §5) can drop the control
+        // connection before or during this very round trip, so it's retried against
+        // whatever connection the reconnect loop (heartbeat- or NetworkChanged-driven)
+        // brings back, rather than failing on the first attempt.
+        var (transferId, token, streams, part, endpoint) = await RequestTransferWithRetryAsync(remotePath, ct);
 
         await using (part)
         {
@@ -141,21 +168,77 @@ public sealed class PeerHost : IPeerHost, IAsyncDisposable
             }
             catch (Exception) when (!ct.IsCancellationRequested)
             {
-                // One reconnect-and-resume attempt, mirroring TransferEngine.PullAsync:
-                // mint a fresh transfer id/token over the control channel (gated),
-                // then resume the byte transfer (ungated) from where it stopped.
-                var (retryTransferId, retryToken, retryStreams) = await RequestFreshTokenAsync(remotePath, ct);
-                await bulk.DownloadAsync(endpoint, retryTransferId, retryToken, part, retryStreams, progress, ct);
+                // The control connection (and possibly the bulk one) died mid-transfer —
+                // a dropped Wi-Fi link, a network switch (spec §5), or anything else the
+                // heartbeat loop or NetworkChanged handler is already reacting to by
+                // tearing down and reconnecting. Wait for that reconnect loop to bring the
+                // control connection back, then mint a fresh transfer id/token over it
+                // (gated) and resume the byte transfer (ungated) from where the chunk
+                // bitmap says it stopped. Retried, not a single attempt, because the
+                // reconnect itself can take several backoff cycles.
+                await ResumeAfterDisconnectAsync(bulk, remotePath, part, progress, ct);
             }
 
             if (!await part.CompleteAsync(ct))
                 throw new ControlProtocolException("The transfer finished with chunks still missing.");
 
+            // The bulk transfer runs on its own socket, so it can finish successfully even
+            // while a network change (spec §5) is still tearing down and re-establishing
+            // the control connection in the background. Let that settle before reporting
+            // the pull done, so a caller checking State right after PullAsync returns sees
+            // the real, final connectivity rather than a mid-reconnect snapshot.
+            await WaitForSettledStateAsync(ct);
+
             return part.DestinationPath;
         }
     }
 
-    private async Task<(Guid TransferId, Guid Token, int Streams, PartFile Part)> RequestTransferAsync(
+    /// <summary>Waits for any in-flight reconnect (heartbeat- or NetworkChanged-driven) to
+    /// reach <see cref="PeerConnectionState.Connected"/>, bounded so a pull whose transfer
+    /// already succeeded never hangs on a control channel that genuinely never comes back.</summary>
+    private async Task WaitForSettledStateAsync(CancellationToken ct)
+    {
+        if (State == PeerConnectionState.Connected && Volatile.Read(ref _handlingNetworkChange) == 0) return;
+
+        using var bound = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        bound.CancelAfter(DiscoveryTimeout + ConnectTimeout + MaxReconnectBackoff);
+
+        try
+        {
+            await WaitForConnectionAsync(bound.Token);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            // Gave up waiting for the control channel to settle; the transfer itself
+            // already succeeded, so report that result rather than failing a completed pull.
+        }
+    }
+
+    private async Task<(Guid TransferId, Guid Token, int Streams, PartFile Part, IPEndPoint Endpoint)> RequestTransferWithRetryAsync(
+        string remotePath, CancellationToken ct)
+    {
+        Exception? last = null;
+
+        for (var attempt = 0; attempt < MaxResumeAttempts; attempt++)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            try
+            {
+                await WaitForConnectionAsync(ct);
+                return await RequestTransferAsync(remotePath, ct);
+            }
+            catch (Exception ex) when (!ct.IsCancellationRequested)
+            {
+                last = ex;
+                await Task.Delay(ResumeRetryDelay, ct);
+            }
+        }
+
+        throw last ?? new ControlProtocolException("Could not start the transfer after the network changed.");
+    }
+
+    private async Task<(Guid TransferId, Guid Token, int Streams, PartFile Part, IPEndPoint Endpoint)> RequestTransferAsync(
         string remotePath, CancellationToken ct)
     {
         var reply = await SendRequestAsync("pull.request", new PullRequest(remotePath), ct);
@@ -166,6 +249,14 @@ public sealed class PeerHost : IPeerHost, IAsyncDisposable
         var response = reply.PayloadAs<PullResponse>()
             ?? throw new ControlProtocolException("The peer sent a malformed transfer response.");
 
+        // Captured in the same breath as the successful reply, not re-read later: by the
+        // time the caller gets around to using it, a network change (spec §5) may already
+        // have dropped this very connection, and re-reading _connection at that point could
+        // race an unguarded null. If this snapshot IS already stale, the bulk transfer that
+        // uses it will simply fail into PullAsync's own resume-after-disconnect retry.
+        var connection = _connection ?? throw new InvalidOperationException("Not connected.");
+        var endpoint = new IPEndPoint(connection.RemoteEndPoint.Address, SlipstreamPorts.Bulk);
+
         Directory.CreateDirectory(_downloadDirectory);
 
         var transferId = Guid.Parse(response.TransferId);
@@ -175,7 +266,7 @@ public sealed class PeerHost : IPeerHost, IAsyncDisposable
 
         var part = PartFile.OpenOrCreate(destination, transferId, response.Size, response.ChunkSize);
 
-        return (transferId, token, streams, part);
+        return (transferId, token, streams, part, endpoint);
     }
 
     private async Task<(Guid TransferId, Guid Token, int Streams)> RequestFreshTokenAsync(string remotePath, CancellationToken ct)
@@ -189,6 +280,93 @@ public sealed class PeerHost : IPeerHost, IAsyncDisposable
             ?? throw new ControlProtocolException("The peer sent a malformed transfer response.");
 
         return (Guid.Parse(response.TransferId), Guid.Parse(response.Token), Math.Min(_peer.StreamCount, response.Streams));
+    }
+
+    private async Task ResumeAfterDisconnectAsync(
+        BulkClient bulk, string remotePath, PartFile part, IProgress<TransferProgress>? progress, CancellationToken ct)
+    {
+        Exception? last = null;
+
+        for (var attempt = 0; attempt < MaxResumeAttempts; attempt++)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            try
+            {
+                var connection = await WaitForConnectionAsync(ct);
+                var resumeEndpoint = new IPEndPoint(connection.RemoteEndPoint.Address, SlipstreamPorts.Bulk);
+                var (retryTransferId, retryToken, retryStreams) = await RequestFreshTokenAsync(remotePath, ct);
+                await bulk.DownloadAsync(resumeEndpoint, retryTransferId, retryToken, part, retryStreams, progress, ct);
+                return;
+            }
+            catch (Exception ex) when (!ct.IsCancellationRequested)
+            {
+                last = ex;
+                await Task.Delay(ResumeRetryDelay, ct);
+            }
+        }
+
+        throw last ?? new ControlProtocolException("Could not resume the transfer after the network changed.");
+    }
+
+    /// <summary>Waits until the reconnect loop (heartbeat- or NetworkChanged-driven) has a
+    /// live control connection again, rather than failing the moment one attempt races
+    /// ahead of the other side reconnecting.</summary>
+    private async Task<ControlConnection> WaitForConnectionAsync(CancellationToken ct)
+    {
+        while (true)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            if (_connection is { } connection && State == PeerConnectionState.Connected)
+                return connection;
+
+            await Task.Delay(100, ct);
+        }
+    }
+
+    private void OnNetworkChanged()
+    {
+        // Coalesce bursts of NetworkChange.NetworkAddressChanged (the OS can fire it more
+        // than once for a single physical switch) into a single reconnect loop.
+        if (Interlocked.CompareExchange(ref _handlingNetworkChange, 1, 0) != 0) return;
+
+        _networkChangeTask = HandleNetworkChangeAsync(_lifetime.Token);
+    }
+
+    private async Task HandleNetworkChangeAsync(CancellationToken ct)
+    {
+        try
+        {
+            // Spec §5: a network switch is routine, never an error state.
+            SetState(PeerConnectionState.Lost);
+
+            var backoff = MinReconnectBackoff;
+            while (!ct.IsCancellationRequested)
+            {
+                if (await ReconnectAsync(ct)) break;
+
+                try
+                {
+                    await Task.Delay(backoff, ct);
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
+
+                backoff = TimeSpan.FromSeconds(Math.Min(backoff.TotalSeconds * 2, MaxReconnectBackoff.TotalSeconds));
+            }
+
+            // Absorb a burst of follow-up NetworkChanged notifications the OS can still
+            // deliver for what is really one physical switch (see OnNetworkChanged) before
+            // letting a fresh event start a whole new teardown/reconnect cycle.
+            try { await Task.Delay(NetworkChangeQuietPeriod, ct); } catch (OperationCanceledException) { }
+        }
+        finally
+        {
+            Volatile.Write(ref _handlingNetworkChange, 0);
+        }
     }
 
     public async Task StreamAsync(string remotePath, CancellationToken ct)
@@ -336,8 +514,15 @@ public sealed class PeerHost : IPeerHost, IAsyncDisposable
         if (_disposed) return;
         _disposed = true;
 
+        _peer.NetworkChanged -= OnNetworkChanged;
+
         await _lifetime.CancelAsync();
         await DropConnectionAsync();
+
+        if (_networkChangeTask is not null)
+        {
+            try { await _networkChangeTask; } catch { /* already logged via state transition */ }
+        }
 
         if (_peerRunTask is not null)
         {
@@ -347,5 +532,6 @@ public sealed class PeerHost : IPeerHost, IAsyncDisposable
         await _peer.DisposeAsync();
         _lifetime.Dispose();
         _gate.Dispose();
+        _reconnectGate.Dispose();
     }
 }

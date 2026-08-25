@@ -156,6 +156,26 @@ public class DeviceViewModelTests
     }
 
     [Fact]
+    public async Task Peer_state_stat_updates_safely_when_StateChanged_fires_from_a_background_thread()
+    {
+        // Task 16: PeerHost's NetworkChanged-driven reconnect loop now raises StateChanged
+        // from its own background Task far more often than the old one-shot connect path
+        // did. OnPeerStateChanged must marshal through RunOnUiThread (same as
+        // OnTransferUpdated above) before touching PeerStateText/DiscoverySummaryText,
+        // rather than mutating those observable properties straight off that thread.
+        var host = new FakePeerHost();
+        var vm = new DeviceViewModel(host);
+
+        await Task.Run(() => host.RaiseState(PeerConnectionState.Lost, null));
+
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+        while (vm.PeerStateText != "Connection lost" && DateTime.UtcNow < deadline)
+            await Task.Delay(10);
+
+        Assert.Equal("Connection lost", vm.PeerStateText);
+    }
+
+    [Fact]
     public void Discovery_detail_lists_all_four_strategies()
     {
         var host = new FakePeerHost();

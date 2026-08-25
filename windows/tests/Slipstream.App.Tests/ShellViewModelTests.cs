@@ -48,4 +48,25 @@ public class ShellViewModelTests
         // Spec §16: explain the slow link rather than leaving the user to wonder.
         Assert.Equal("2.4 GHz — slower link", vm.ConnectionLabel);
     }
+
+    [Fact]
+    public async Task Connection_status_updates_safely_when_StateChanged_fires_from_a_background_thread()
+    {
+        // Task 16: PeerHost's NetworkChanged-driven reconnect loop raises StateChanged from
+        // its own background Task far more often than the old one-shot connect path did.
+        // OnPeerStateChanged must marshal through RunOnUiThread before touching
+        // ConnectionStatus/ConnectionLabel, rather than mutating those observable
+        // properties straight off that thread.
+        var host = new FakePeerHost();
+        var vm = new ShellViewModel(host);
+
+        await Task.Run(() => host.RaiseState(PeerConnectionState.Lost, null));
+
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+        while (vm.ConnectionStatus != MeridianStatus.Critical && DateTime.UtcNow < deadline)
+            await Task.Delay(10);
+
+        Assert.Equal(MeridianStatus.Critical, vm.ConnectionStatus);
+        Assert.Equal("Connection lost", vm.ConnectionLabel);
+    }
 }

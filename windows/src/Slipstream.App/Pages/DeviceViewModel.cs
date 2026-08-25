@@ -113,8 +113,12 @@ public sealed partial class DeviceViewModel : ObservableObject
             _transferQueue.ItemUpdated += OnTransferUpdated;
     }
 
+    // StateChanged now fires from PeerHost's background reconnect loop (Task 16's
+    // network-change handling) far more often than it used to, so — like
+    // OnTransferUpdated below — this must be marshaled onto the UI thread before Refresh
+    // touches any observable property.
     private void OnPeerStateChanged(PeerConnectionState state, string? peerName, string? band)
-        => Refresh(state, peerName);
+        => RunOnUiThread(() => Refresh(state, peerName));
 
     // TransferQueue.ItemUpdated fires from a background thread inside TransferQueue.RunAsync
     // (see its class remarks), so the resulting HeroRateText mutation must be marshaled onto

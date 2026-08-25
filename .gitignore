@@ -26,3 +26,6 @@ BuildArtifacts/
 Thumbs.db
 desktop.ini
 .DS_Store
+
+# Agent worktrees
+.claude/worktrees/

@@ -123,4 +123,39 @@ public class TransferPlanTests
         Assert.Equal(size, ranges.Sum(r => r.Length));
         Assert.Equal(size, ranges.Max(r => r.EndExclusive));
     }
+
+    [Fact]
+    public void SplitMissing_assigns_a_small_file_whole()
+    {
+        // The threshold rule must hold on the path production actually calls.
+        var bitmap = new ChunkBitmap(ChunkBitmap.ChunkCountFor(3 * Chunk, Chunk));
+
+        var ranges = TransferPlan.SplitMissing(bitmap, 3 * Chunk, streamCount: 4, Chunk);
+
+        Assert.Single(ranges);
+        Assert.Equal(0, ranges[0].Start);
+        Assert.Equal(3 * Chunk, ranges[0].Length);
+    }
+
+    [Fact]
+    public void SplitMissing_still_subdivides_a_large_file()
+    {
+        var bitmap = new ChunkBitmap(ChunkBitmap.ChunkCountFor(40 * Chunk, Chunk));
+
+        Assert.Equal(4, TransferPlan.SplitMissing(bitmap, 40 * Chunk, streamCount: 4, Chunk).Count);
+    }
+
+    [Fact]
+    public void SplitMissing_does_not_apply_the_small_file_rule_to_a_partial_resume()
+    {
+        // A 3 MB file already half-done is still one gap — but the rule is about the
+        // file, not the gap, so it stays whole either way.
+        var bitmap = new ChunkBitmap(3);
+        bitmap[0] = true;
+
+        var ranges = TransferPlan.SplitMissing(bitmap, 3 * Chunk, streamCount: 4, Chunk);
+
+        Assert.Single(ranges);
+        Assert.Equal(Chunk, ranges[0].Start);
+    }
 }

@@ -66,6 +66,11 @@ public static class TransferPlan
 
         if (ranges.Count == 0) return [];
 
+        // Spec §7: range-splitting a small file costs more than it saves. The rule is about
+        // the file's size, not the gap's — checked here rather than only in Split(), because
+        // SplitMissing is the method the download path actually calls.
+        if (fileSize < SmallFileThreshold) return ranges;
+
         // Subdivide the largest gaps so all available streams stay busy.
         var streams = Math.Max(1, streamCount);
         while (ranges.Count < streams)

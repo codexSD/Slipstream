@@ -1,7 +1,10 @@
 using System.Diagnostics;
+using System.Net;
 using Slipstream.Core;
 using Slipstream.Core.Control;
+using Slipstream.Core.Control.Handlers;
 using Slipstream.Core.Identity;
+using Slipstream.Core.Transfer;
 
 var command = args.Length > 0 ? args[0] : "help";
 var stateDir = Path.Combine(Path.GetTempPath(), "slipstream-harness", args.Length > 1 ? args[1] : "default");
@@ -39,30 +42,19 @@ switch (command)
 
     case "serve":
     {
+        // SlipstreamPeer.StartAsync now wires every inbound connection through
+        // SlipstreamSession itself (hello, list, stat, pull.request, stream.request,
+        // play, clipboard) — a second reader on the same connection here would just
+        // race it for messages, so this only logs, it no longer dispatches.
         await using var peer = new SlipstreamPeer(stateDir, Environment.MachineName);
 
         peer.StartAsync(cts.Token).ContinueWith(_ => { }, TaskScheduler.Default).Forget();
         await Task.Delay(300, cts.Token);
 
-        peer.Server.PeerConnected += async (connection, token) =>
+        peer.Server.PeerConnected += (connection, _) =>
         {
             Console.WriteLine($"Peer connected from {connection.RemoteEndPoint}");
-
-            while (await connection.ReceiveAsync(token) is { } message)
-            {
-                Console.WriteLine($"  <- {message.Type} {message.Id}");
-
-                if (message.Type == "hello")
-                {
-                    await connection.SendAsync(ControlMessage.Response("hello.ok", message.Id!, new HelloPayload(
-                        SlipstreamPorts.ProtocolVersion, peer.Identity.DeviceId,
-                        peer.Identity.DisplayName, peer.Identity.Fingerprint)), token);
-                }
-                else if (message.Type == "ping")
-                {
-                    await connection.SendAsync(ControlMessage.Response("pong", message.Id!), token);
-                }
-            }
+            return Task.CompletedTask;
         };
 
         Console.WriteLine($"Listening on {peer.Server.ListenEndPoint}. Ctrl+C to stop.");
@@ -103,8 +95,86 @@ switch (command)
         break;
     }
 
+    case "pull":
+    {
+        // pull <state> <remotePath>
+        await using var peer = new SlipstreamPeer(stateDir, Environment.MachineName);
+        _ = peer.StartAsync(cts.Token);
+        await Task.Delay(300, cts.Token);
+
+        var found = await peer.FindPeerAsync(TimeSpan.FromSeconds(10), cts.Token);
+        if (found is null) { Console.WriteLine("Phone not on this network."); return 1; }
+
+        await using var connection = await peer.Client.ConnectAsync(
+            found.Peer.Endpoint, TimeSpan.FromSeconds(5), cts.Token);
+
+        var stopwatch = Stopwatch.StartNew();
+        var progress = new Progress<TransferProgress>(p =>
+            Console.Write($"\r{p.BytesCompleted / 1048576.0:F1} / {p.TotalBytes / 1048576.0:F1} MB " +
+                          $"at {p.BytesPerSecond / 1048576.0:F1} MB/s   "));
+
+        var local = await peer.Engine.PullAsync(
+            connection!, new IPEndPoint(found.Peer.Endpoint.Address, SlipstreamPorts.Bulk),
+            args[2], progress, cts.Token);
+
+        stopwatch.Stop();
+        Console.WriteLine($"\nSaved to {local} in {stopwatch.Elapsed.TotalSeconds:F1}s");
+        break;
+    }
+
+    case "stream":
+    {
+        // stream <state> <remotePath> — asks the peer to play it here
+        await using var peer = new SlipstreamPeer(stateDir, Environment.MachineName);
+        _ = peer.StartAsync(cts.Token);
+        await Task.Delay(300, cts.Token);
+
+        var found = await peer.FindPeerAsync(TimeSpan.FromSeconds(10), cts.Token);
+        if (found is null) { Console.WriteLine("Phone not on this network."); return 1; }
+
+        await using var connection = await peer.Client.ConnectAsync(
+            found.Peer.Endpoint, TimeSpan.FromSeconds(5), cts.Token);
+
+        await connection!.SendAsync(
+            ControlMessage.Request("stream.request", "1", new StatRequest(args[2])), cts.Token);
+
+        var reply = await connection.ReceiveAsync(cts.Token);
+        var play = reply?.PayloadAs<PlayMessage>();
+
+        Console.WriteLine(play is null ? "The peer refused the stream." : $"Stream URL: {play.Url}");
+        break;
+    }
+
+    case "send-text":
+    {
+        // send-text <state> <text> — spec §10 clipboard push
+        if (args.Length < 3)
+        {
+            Console.WriteLine("Usage: send-text <state> <text>");
+            return 1;
+        }
+
+        await using var peer = new SlipstreamPeer(stateDir, Environment.MachineName);
+        _ = peer.StartAsync(cts.Token);
+        await Task.Delay(300, cts.Token);
+
+        var found = await peer.FindPeerAsync(TimeSpan.FromSeconds(10), cts.Token);
+        if (found is null) { Console.WriteLine("Phone not on this network."); return 1; }
+
+        await using var connection = await peer.Client.ConnectAsync(
+            found.Peer.Endpoint, TimeSpan.FromSeconds(5), cts.Token);
+
+        await connection!.SendAsync(
+            ControlMessage.Request("clipboard", "1", new ClipboardMessage(args[2])), cts.Token);
+
+        var reply = await connection.ReceiveAsync(cts.Token);
+        Console.WriteLine(reply?.Type == "clipboard.ok" ? "Sent." : $"The peer refused: {reply?.Type}");
+        break;
+    }
+
     default:
-        Console.WriteLine("Commands: identity <state> | pair <state> <id> <name> <fingerprint> | serve <state> | find <state>");
+        Console.WriteLine("Commands: identity <state> | pair <state> <id> <name> <fingerprint> | serve <state> | find <state> | " +
+                           "pull <state> <remotePath> | stream <state> <remotePath> | send-text <state> <text>");
         break;
 }
 

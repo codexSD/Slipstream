@@ -1,0 +1,9 @@
+{
+  "description": "CRC-32C (Castagnoli, polynomial 0x1EDC6F41), reflected, init 0xFFFFFFFF, final xor 0xFFFFFFFF.",
+  "cases": [
+    { "input_utf8": "", "crc_hex": "00000000" },
+    { "input_utf8": "a", "crc_hex": "c1d04330" },
+    { "input_utf8": "123456789", "crc_hex": "e3069283" },
+    { "input_utf8": "The quick brown fox jumps over the lazy dog", "crc_hex": "22620404" }
+  ]
+}

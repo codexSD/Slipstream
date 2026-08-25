@@ -1,0 +1,87 @@
+package com.slipstream.meridian.component
+
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Wifi
+import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
+import com.slipstream.meridian.MeridianTheme
+import org.junit.Assert.assertEquals
+import org.junit.Rule
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+
+@RunWith(RobolectricTestRunner::class)
+class MeridianStatusPillTest {
+
+    @get:Rule
+    val compose = createComposeRule()
+
+    @Test
+    fun `always shows a text label alongside the colour`() {
+        // Colour is never the only cue. This is enforced by the API, not by discipline.
+        compose.setContent {
+            MeridianTheme { MeridianStatusPill(MeridianStatus.Critical, "Transfer failed") }
+        }
+        compose.onNodeWithText("Transfer failed").assertIsDisplayed()
+    }
+
+    @Test
+    fun `renders every status in light and dark`() {
+        MeridianStatus.entries.forEach { status ->
+            listOf(false, true).forEach { dark ->
+                compose.setContent {
+                    MeridianTheme(darkTheme = dark) { MeridianStatusPill(status, status.name) }
+                }
+                compose.onNodeWithText(status.name).assertIsDisplayed()
+            }
+        }
+    }
+
+    @Test
+    fun `shows an icon when one is supplied`() {
+        compose.setContent {
+            MeridianTheme {
+                MeridianStatusPill(
+                    status = MeridianStatus.Warning,
+                    label = "2.4 GHz — slower link",
+                    icon = Icons.Filled.Wifi,
+                )
+            }
+        }
+        compose.onNodeWithContentDescription("Warning").assertIsDisplayed()
+    }
+
+    @Test
+    fun `there are exactly five statuses`() {
+        assertEquals(5, MeridianStatus.entries.size)
+    }
+
+    @Test
+    fun `icon tile renders and is clickable when given a handler`() {
+        var clicks = 0
+        compose.setContent {
+            MeridianTheme {
+                MeridianIconTile(
+                    icon = Icons.Filled.Wifi,
+                    contentDescription = "Send files",
+                    onClick = { clicks++ },
+                )
+            }
+        }
+
+        compose.onNodeWithContentDescription("Send files").performClick()
+        assertEquals(1, clicks)
+    }
+
+    @Test
+    fun `icon tile renders without a handler`() {
+        compose.setContent {
+            MeridianTheme { MeridianIconTile(Icons.Filled.Wifi, "Decorative") }
+        }
+        compose.onNodeWithContentDescription("Decorative").assertIsDisplayed()
+    }
+}

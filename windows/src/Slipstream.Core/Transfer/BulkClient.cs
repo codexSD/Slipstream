@@ -40,23 +40,43 @@ public sealed class BulkClient
         var alreadyDone = (long)part.Bitmap.CompletedCount * part.ChunkSize;
         var completed = Math.Min(alreadyDone, part.Size);
         var stopwatch = Stopwatch.StartNew();
-        var lastReport = TimeSpan.Zero;
+        var lastReportTicks = 0L;
 
         void Report(int bytes)
         {
             var total = Interlocked.Add(ref completed, bytes);
             if (progress is null) return;
 
-            var elapsed = stopwatch.Elapsed;
-            if (elapsed - lastReport < ProgressInterval && total < part.Size) return;
+            var nowTicks = stopwatch.Elapsed.Ticks;
+            var previous = Interlocked.Read(ref lastReportTicks);
 
-            lastReport = elapsed;
+            if (nowTicks - previous < ProgressInterval.Ticks && total < part.Size) return;
+
+            // Only the thread that wins the exchange reports, so N streams cannot burst.
+            if (Interlocked.CompareExchange(ref lastReportTicks, nowTicks, previous) != previous) return;
+
+            var elapsed = TimeSpan.FromTicks(nowTicks);
             var rate = elapsed.TotalSeconds > 0 ? (total - alreadyDone) / elapsed.TotalSeconds : 0;
             progress.Report(new TransferProgress(transferId, total, part.Size, rate));
         }
 
-        await Task.WhenAll(ranges.Select((range, index) =>
-            PullRangeAsync(endpoint, transferId, token, part, range, (ushort)index, Report, cancellationToken)));
+        // A fragmented bitmap can yield more ranges than streams. Process them all, but
+        // never hold more than `streams` sockets open at once.
+        using var slots = new SemaphoreSlim(streams);
+
+        await Task.WhenAll(ranges.Select(async (range, index) =>
+        {
+            await slots.WaitAsync(cancellationToken);
+            try
+            {
+                await PullRangeAsync(
+                    endpoint, transferId, token, part, range, (ushort)index, Report, cancellationToken);
+            }
+            finally
+            {
+                slots.Release();
+            }
+        }));
 
         progress?.Report(new TransferProgress(
             transferId, Interlocked.Read(ref completed), part.Size,

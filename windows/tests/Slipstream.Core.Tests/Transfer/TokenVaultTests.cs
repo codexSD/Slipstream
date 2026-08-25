@@ -7,15 +7,29 @@ public class TokenVaultTests
     private static readonly Guid Transfer = Guid.Parse("11111111-1111-1111-1111-111111111111");
 
     [Fact]
-    public void A_bulk_token_validates_once_per_expected_stream()
+    public void A_bulk_token_validates_as_many_times_as_a_fragmented_resume_needs()
     {
         var vault = new TokenVault();
         var token = vault.IssueBulk(Transfer, @"C:\file.bin", 1000, expectedStreams: 4);
 
-        for (var i = 0; i < 4; i++)
+        // A fragmented bitmap legitimately needs more connections than streams.
+        for (var i = 0; i < 32; i++)
             Assert.NotNull(vault.ValidateBulk(token.Value, Transfer));
+    }
 
-        Assert.Null(vault.ValidateBulk(token.Value, Transfer)); // fifth use refused
+    [Fact]
+    public void A_bulk_token_expires_after_thirty_minutes()
+    {
+        var time = new FakeTimeProvider(DateTimeOffset.Parse("2026-08-25T10:00:00Z"));
+        var vault = new TokenVault(time);
+
+        var token = vault.IssueBulk(Transfer, @"C:\file.bin", 1000, expectedStreams: 4);
+
+        time.Advance(TimeSpan.FromMinutes(29));
+        Assert.NotNull(vault.ValidateBulk(token.Value, Transfer));
+
+        time.Advance(TimeSpan.FromMinutes(2));
+        Assert.Null(vault.ValidateBulk(token.Value, Transfer));
     }
 
     [Fact]

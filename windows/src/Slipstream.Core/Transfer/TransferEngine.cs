@@ -9,14 +9,11 @@ namespace Slipstream.Core.Transfer;
 /// verify, complete. Resume is inherited from PartFile, so a retry after any
 /// interruption continues rather than restarts.
 /// </summary>
-// `client` is part of the constructor shape the plan specifies (and matches how every
-// other collaborator here is passed in), but PullAsync always receives an
-// already-connected ControlConnection explicitly, so nothing in this type reads it.
-#pragma warning disable CS9113 // Parameter is unread.
 public sealed class TransferEngine(
     ControlClient client, BulkClient bulk, string downloadDirectory, int streamCount)
-#pragma warning restore CS9113
 {
+    private ControlConnection? _reconnected;
+
     public async Task<string> PullAsync(
         ControlConnection control,
         IPEndPoint peerEndpoint,
@@ -24,10 +21,34 @@ public sealed class TransferEngine(
         IProgress<TransferProgress>? progress,
         CancellationToken cancellationToken)
     {
-        var requestId = Guid.NewGuid().ToString("N")[..8];
-        await control.SendAsync(ControlMessage.Request("pull.request", requestId, new PullRequest(remotePath)), cancellationToken);
+        try
+        {
+            return await PullCoreAsync(control, peerEndpoint, remotePath, progress, cancellationToken);
+        }
+        finally
+        {
+            if (_reconnected is not null)
+            {
+                var stale = _reconnected;
+                _reconnected = null;
+                await stale.DisposeAsync();
+            }
+        }
+    }
 
-        var reply = await AwaitReplyAsync(control, requestId, cancellationToken);
+    private async Task<string> PullCoreAsync(
+        ControlConnection control,
+        IPEndPoint peerEndpoint,
+        string remotePath,
+        IProgress<TransferProgress>? progress,
+        CancellationToken cancellationToken)
+    {
+        var live = await LiveConnectionAsync(control, peerEndpoint, cancellationToken);
+
+        var requestId = Guid.NewGuid().ToString("N")[..8];
+        await live.SendAsync(ControlMessage.Request("pull.request", requestId, new PullRequest(remotePath)), cancellationToken);
+
+        var reply = await AwaitReplyAsync(live, requestId, cancellationToken);
 
         if (reply.Type != "pull.ok")
             throw new ControlProtocolException(
@@ -59,7 +80,7 @@ public sealed class TransferEngine(
             // issued, so both must come from the same reply. PartFile's bitmap is
             // already open and keeps tracking progress from the byte it stopped at
             // regardless of which transfer id labels the retry.
-            var (retryTransferId, retryToken) = await RequestFreshTokenAsync(control, remotePath, cancellationToken);
+            var (retryTransferId, retryToken) = await RequestFreshTokenAsync(control, peerEndpoint, remotePath, cancellationToken);
 
             await bulk.DownloadAsync(
                 peerEndpoint, retryTransferId, retryToken, part,
@@ -72,17 +93,49 @@ public sealed class TransferEngine(
         return destination;
     }
 
-    private static async Task<(Guid TransferId, Guid Token)> RequestFreshTokenAsync(
-        ControlConnection control, string remotePath, CancellationToken cancellationToken)
+    private async Task<(Guid TransferId, Guid Token)> RequestFreshTokenAsync(
+        ControlConnection control, IPEndPoint peerEndpoint, string remotePath, CancellationToken cancellationToken)
     {
-        var requestId = Guid.NewGuid().ToString("N")[..8];
-        await control.SendAsync(ControlMessage.Request("pull.request", requestId, new PullRequest(remotePath)), cancellationToken);
+        var live = await LiveConnectionAsync(control, peerEndpoint, cancellationToken);
 
-        var reply = await AwaitReplyAsync(control, requestId, cancellationToken);
+        var requestId = Guid.NewGuid().ToString("N")[..8];
+        await live.SendAsync(ControlMessage.Request("pull.request", requestId, new PullRequest(remotePath)), cancellationToken);
+
+        var reply = await AwaitReplyAsync(live, requestId, cancellationToken);
         var response = reply.PayloadAs<PullResponse>()
             ?? throw new ControlProtocolException("The peer sent a malformed transfer response.");
 
         return (Guid.Parse(response.TransferId), Guid.Parse(response.Token));
+    }
+
+    /// <summary>
+    /// Returns a usable control connection, reconnecting through the ControlClient if the
+    /// supplied one is dead. The retry exists for connection loss, so it cannot depend on
+    /// the connection that was lost.
+    /// </summary>
+    private async Task<ControlConnection> LiveConnectionAsync(
+        ControlConnection supplied, IPEndPoint peerEndpoint, CancellationToken cancellationToken)
+    {
+        if (_reconnected is not null) return _reconnected;
+
+        try
+        {
+            await supplied.SendAsync(ControlMessage.Request("ping", "probe"), cancellationToken);
+            return supplied;
+        }
+        catch (Exception)
+        {
+            // Reconnect to the control endpoint the dead connection was actually
+            // talking to (not a fixed port derived from the bulk endpoint) — this is
+            // the only address guaranteed correct under both fixed and ephemeral
+            // port configurations.
+            var controlEndpoint = supplied.RemoteEndPoint;
+
+            _reconnected = await client.ConnectAsync(controlEndpoint, TimeSpan.FromSeconds(10), cancellationToken)
+                ?? throw new ControlProtocolException("Lost the connection to the peer and could not reconnect.");
+
+            return _reconnected;
+        }
     }
 
     private static async Task<ControlMessage> AwaitReplyAsync(

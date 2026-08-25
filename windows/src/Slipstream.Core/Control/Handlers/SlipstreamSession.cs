@@ -36,6 +36,14 @@ public sealed class SlipstreamSession(
 
     public string? LastClipboardText { get; private set; }
 
+    /// <summary>
+    /// Raised when the peer sends clipboard text. Slipstream.Core cannot reach the system
+    /// clipboard from a plain net9.0 target — the host app (WinUI, or the harness)
+    /// subscribes and completes spec §10. Storing to LastClipboardText alone reported
+    /// success while doing nothing observable.
+    /// </summary>
+    public event Action<string>? ClipboardReceived;
+
     public Task<ControlMessage?> HandleAsync(ControlMessage message, CancellationToken cancellationToken) =>
         Task.FromResult(Dispatch(message));
 
@@ -154,6 +162,7 @@ public sealed class SlipstreamSession(
             return Error(message, "clipboard.error", "That text is too large to send.");
 
         LastClipboardText = request.Text;
+        ClipboardReceived?.Invoke(request.Text);
 
         return ControlMessage.Response("clipboard.ok", message.Id!);
     }

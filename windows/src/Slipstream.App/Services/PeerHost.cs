@@ -17,9 +17,14 @@ namespace Slipstream.App.Services;
 /// </summary>
 /// <remarks>
 /// The control channel is a single duplex stream: two concurrent request/response pairs
-/// would interleave their replies on the wire, so every request — a browse, a pull
-/// handshake, a heartbeat — is serialised behind <see cref="_gate"/>, held for the full
-/// round trip. Nothing here ever touches a UI thread; that dispatch is the view models' job.
+/// would interleave their replies on the wire, so every control round trip — a browse, a
+/// pull handshake, a heartbeat — is serialised behind <see cref="_gate"/>, held only for
+/// that round trip. <see cref="PullAsync"/> is the one exception worth calling out: it
+/// gates the pull.request/pull.ok handshake but NOT the bulk byte transfer that follows,
+/// since that transfer runs over its own socket (<see cref="SlipstreamPorts.Bulk"/>) and
+/// can legitimately run for many seconds — holding the gate for it would starve the
+/// heartbeat loop and any concurrent control call for the whole transfer. Nothing here
+/// ever touches a UI thread; that dispatch is the view models' job.
 /// </remarks>
 [SupportedOSPlatform("windows")]
 public sealed class PeerHost : IPeerHost, IAsyncDisposable
@@ -105,15 +110,71 @@ public sealed class PeerHost : IPeerHost, IAsyncDisposable
         var connection = _connection ?? throw new InvalidOperationException("Not connected.");
         var endpoint = new IPEndPoint(connection.RemoteEndPoint.Address, SlipstreamPorts.Bulk);
 
-        await _gate.WaitAsync(ct);
-        try
+        // Only the pull.request/pull.ok round trip touches the shared control wire, so
+        // only that round trip is serialised behind _gate (via SendRequestAsync below).
+        // The bulk byte transfer runs over its own socket on SlipstreamPorts.Bulk and
+        // must NOT hold the gate — otherwise a multi-second transfer would starve the
+        // heartbeat loop's ping, whose 3s timeout would flip State to Lost and would
+        // also block unrelated calls like ListAsync for the whole transfer duration.
+        var (transferId, token, streams, part) = await RequestTransferAsync(remotePath, ct);
+
+        await using (part)
         {
-            return await _peer.Engine.PullAsync(connection, endpoint, remotePath, progress, ct);
+            var bulk = new BulkClient();
+            try
+            {
+                await bulk.DownloadAsync(endpoint, transferId, token, part, streams, progress, ct);
+            }
+            catch (Exception) when (!ct.IsCancellationRequested)
+            {
+                // One reconnect-and-resume attempt, mirroring TransferEngine.PullAsync:
+                // mint a fresh transfer id/token over the control channel (gated),
+                // then resume the byte transfer (ungated) from where it stopped.
+                var (retryTransferId, retryToken, retryStreams) = await RequestFreshTokenAsync(remotePath, ct);
+                await bulk.DownloadAsync(endpoint, retryTransferId, retryToken, part, retryStreams, progress, ct);
+            }
+
+            if (!await part.CompleteAsync(ct))
+                throw new ControlProtocolException("The transfer finished with chunks still missing.");
+
+            return part.DestinationPath;
         }
-        finally
-        {
-            _gate.Release();
-        }
+    }
+
+    private async Task<(Guid TransferId, Guid Token, int Streams, PartFile Part)> RequestTransferAsync(
+        string remotePath, CancellationToken ct)
+    {
+        var reply = await SendRequestAsync("pull.request", new PullRequest(remotePath), ct);
+
+        if (reply.Type != "pull.ok")
+            throw new ControlProtocolException(reply.PayloadAs<ErrorResponse>()?.Message ?? "The peer refused the transfer.");
+
+        var response = reply.PayloadAs<PullResponse>()
+            ?? throw new ControlProtocolException("The peer sent a malformed transfer response.");
+
+        Directory.CreateDirectory(_downloadDirectory);
+
+        var transferId = Guid.Parse(response.TransferId);
+        var token = Guid.Parse(response.Token);
+        var destination = Path.Combine(_downloadDirectory, response.Name);
+        var streams = Math.Min(_peer.StreamCount, response.Streams);
+
+        var part = PartFile.OpenOrCreate(destination, transferId, response.Size, response.ChunkSize);
+
+        return (transferId, token, streams, part);
+    }
+
+    private async Task<(Guid TransferId, Guid Token, int Streams)> RequestFreshTokenAsync(string remotePath, CancellationToken ct)
+    {
+        var reply = await SendRequestAsync("pull.request", new PullRequest(remotePath), ct);
+
+        if (reply.Type != "pull.ok")
+            throw new ControlProtocolException(reply.PayloadAs<ErrorResponse>()?.Message ?? "The peer refused the transfer.");
+
+        var response = reply.PayloadAs<PullResponse>()
+            ?? throw new ControlProtocolException("The peer sent a malformed transfer response.");
+
+        return (Guid.Parse(response.TransferId), Guid.Parse(response.Token), Math.Min(_peer.StreamCount, response.Streams));
     }
 
     public async Task StreamAsync(string remotePath, CancellationToken ct)

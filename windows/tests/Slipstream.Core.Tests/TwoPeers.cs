@@ -19,13 +19,23 @@ public sealed class TwoPeers : IAsyncDisposable
     public required ControlConnection Connection { get; init; }
     public required IPEndPoint ServerEndPoint { get; init; }
 
-    public static async Task<TwoPeers> StartAsync(string rootDirectory, CancellationToken cancellationToken)
+    /// <param name="serverUsesFixedPorts">
+    /// The client always uses ephemeral ports (parallel-safe). The server does too by
+    /// default, but <c>Slipstream.App.Services.PeerHost.PullAsync</c> hardcodes
+    /// <see cref="SlipstreamPorts.Bulk"/> for the remote bulk endpoint rather than
+    /// discovering it, so a test that exercises <c>PeerHost.PullAsync</c> end-to-end needs
+    /// the server's bulk port to actually be <see cref="SlipstreamPorts.Bulk"/>. Pass true
+    /// for that case; it makes the server bind the well-known ports, so at most one such
+    /// test may run at a time on this machine.
+    /// </param>
+    public static async Task<TwoPeers> StartAsync(
+        string rootDirectory, CancellationToken cancellationToken, bool serverUsesFixedPorts = false)
     {
         var server = new SlipstreamPeer(Path.Combine(rootDirectory, "server-state"), "Server PC")
         {
             BindAddress = IPAddress.Loopback,
             DownloadDirectory = Path.Combine(rootDirectory, "server-downloads"),
-            UseEphemeralPorts = true,
+            UseEphemeralPorts = !serverUsesFixedPorts,
         };
 
         // The server's control port is ephemeral (parallel-safe), so this machine's real

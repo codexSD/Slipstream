@@ -191,7 +191,9 @@ share the same payload shape as `hello`:
 Plan 1 does not implement the network transport for these two message types;
 only the payload record and the underlying `PairedPeerStore.Pair` /
 `PairingCode.Derive` primitives that such a flow would use are implemented and
-tested (Tasks 4–5, 16).
+tested (Tasks 4–5, 16). The in-band flow itself — the window gate, the
+restricted handler, the wire exchange, and `pair.cancel` — is implemented in
+Plan 1b; see [`protocol/pairing.md`](pairing.md) for the normative spec.
 
 ## 8. Out of scope here (specified in the design document, implemented in Plan 2)
 

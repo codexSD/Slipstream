@@ -564,7 +564,6 @@ Slipstream/
 ├── docs/
 │   ├── design-guide.md          # Meridian as applied here (§12) — written during implementation
 │   ├── design-playbook.md       # Procedure + Compose traps (§13)
-│   ├── protocol.md              # The wire spec, source of truth for both apps
 │   └── superpowers/specs/
 ├── android/
 │   ├── app/
@@ -574,11 +573,13 @@ Slipstream/
 │   ├── Slipstream.Core/         # discovery, transfer, media server
 │   └── Slipstream.Meridian/     # resource dictionaries + controls
 └── protocol/
+    ├── protocol.md              # The wire spec, source of truth for both apps
+    ├── pairing.md               # In-band pairing flow (Plan 1b) — window, restricted handler, wire flow
     └── vectors/                 # shared conformance fixtures
 ```
 
-`docs/protocol.md` is extracted from §4–§10 during implementation and becomes the authority both
-apps are tested against.
+`protocol/protocol.md` is extracted from §4–§10 during implementation and becomes the authority
+both apps are tested against.
 
 ---
 

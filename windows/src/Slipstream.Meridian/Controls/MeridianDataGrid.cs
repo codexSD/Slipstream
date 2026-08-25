@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.Reflection;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Documents;
 
 namespace Slipstream.Meridian.Controls;
 
@@ -116,6 +117,14 @@ public sealed class MeridianDataGrid : Control
                         _ => TextAlignment.Left,
                     },
             };
+
+            if (column.IsTabular)
+            {
+                // Rate/ETA/size/percent columns need fixed-width digits so values don't jitter
+                // horizontally as they update; mirrors the Typography.NumeralAlignment="Tabular"
+                // XAML attribute used by the static Meridian typography styles.
+                Typography.SetNumeralAlignment(text, FontNumeralAlignment.Tabular);
+            }
 
             panel.Children.Add(text);
         }

@@ -124,4 +124,39 @@ public class DataGridTests
         var doc = LoadGeneric();
         GetDataGridStyle(doc); // throws/asserts if missing
     }
+
+    /// <summary>
+    /// MeridianDataGrid.BuildRowContent builds row-cell TextBlocks entirely in code (see the
+    /// class remarks in MeridianDataGrid.cs) rather than via a static XAML DataTemplate, because
+    /// columns are data-driven at runtime. That code-behind logic can't be exercised headlessly
+    /// here (instantiating WinUI controls off the UI thread throws COMException, per the Task 5
+    /// finding), so this test falls back to source inspection: it parses the source file's own
+    /// text to confirm the tabular-numeral-alignment call lives inside the IsTabular branch,
+    /// alongside the TextAlignment.Right assignment it must accompany. Rate/ETA/size/percent
+    /// columns rendered through this path need fixed-width digits or they visibly jitter as
+    /// values update (see MeridianTypographyTests for the equivalent XAML-declared styles).
+    /// </summary>
+    [Fact]
+    public void BuildRowContent_applies_tabular_numeral_alignment_to_tabular_columns()
+    {
+        var path = TestPaths.Meridian("Controls/MeridianDataGrid.cs");
+        Assert.True(File.Exists(path), $"MeridianDataGrid.cs not found at {path}");
+        var source = File.ReadAllText(path);
+
+        var methodStart = source.IndexOf("BuildRowContent", StringComparison.Ordinal);
+        Assert.True(methodStart >= 0, "BuildRowContent method not found in MeridianDataGrid.cs");
+
+        var tabularBranchStart = source.IndexOf("column.IsTabular", methodStart, StringComparison.Ordinal);
+        Assert.True(tabularBranchStart >= 0,
+            "BuildRowContent must branch on column.IsTabular to apply tabular-specific formatting.");
+
+        // The numeral-alignment call must appear after the IsTabular check within the same
+        // method body (a generous window past the branch keeps this robust to minor reordering
+        // without matching unrelated code elsewhere in the file).
+        var window = source.Substring(tabularBranchStart, Math.Min(2000, source.Length - tabularBranchStart));
+
+        Assert.Contains("SetNumeralAlignment", window);
+        Assert.Contains("FontNumeralAlignment.Tabular", window);
+        Assert.Contains("TextAlignment.Right", window);
+    }
 }

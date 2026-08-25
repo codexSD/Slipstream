@@ -19,6 +19,12 @@ internal sealed class NoOpPeerHost : IPeerHost
     public string? DiscoveryStrategy => null;
     public TimeSpan? DiscoveryElapsed => null;
 
+    public bool IsDiscoveryPaused { get; private set; }
+
+    public void PauseDiscovery() => IsDiscoveryPaused = true;
+
+    public void ResumeDiscovery() => IsDiscoveryPaused = false;
+
     public event Action<PeerConnectionState, string?, string?>? StateChanged
     {
         add { }

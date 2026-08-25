@@ -64,6 +64,12 @@ public sealed class PeerHost : IPeerHost, IAsyncDisposable
 
     public TimeSpan? DiscoveryElapsed { get; private set; }
 
+    public bool IsDiscoveryPaused { get; private set; }
+
+    public void PauseDiscovery() => IsDiscoveryPaused = true;
+
+    public void ResumeDiscovery() => IsDiscoveryPaused = false;
+
     public event Action<PeerConnectionState, string?, string?>? StateChanged;
 
     public async Task StartAsync(CancellationToken ct)
@@ -76,11 +82,15 @@ public sealed class PeerHost : IPeerHost, IAsyncDisposable
         // Give the listener/discovery loops a moment to bind before we start probing.
         await Task.Delay(400, ct);
 
+        if (IsDiscoveryPaused) return;
+
         await ConnectAsync(ct);
     }
 
     public async Task<bool> ReconnectAsync(CancellationToken ct)
     {
+        if (IsDiscoveryPaused) return false;
+
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, _lifetime.Token);
         await DropConnectionAsync();
 

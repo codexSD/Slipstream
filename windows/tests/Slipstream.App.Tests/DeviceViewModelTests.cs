@@ -118,6 +118,10 @@ public class DeviceViewModelTests
         public string? DiscoveryStrategy => null;
         public TimeSpan? DiscoveryElapsed => null;
 
+        public bool IsDiscoveryPaused { get; private set; }
+        public void PauseDiscovery() => IsDiscoveryPaused = true;
+        public void ResumeDiscovery() => IsDiscoveryPaused = false;
+
         public event Action<PeerConnectionState, string?, string?>? StateChanged { add { } remove { } }
 
         public Task StartAsync(CancellationToken ct) => Task.CompletedTask;

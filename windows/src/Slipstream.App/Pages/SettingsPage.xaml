@@ -9,6 +9,10 @@
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     mc:Ignorable="d">
 
+    <Page.Resources>
+        <meridian:BoolToVisibilityConverter x:Key="BoolToVisibilityConverter" />
+    </Page.Resources>
+
     <ScrollViewer VerticalScrollBarVisibility="Auto">
         <StackPanel Spacing="20" MaxWidth="640" HorizontalAlignment="Left">
 
@@ -117,6 +121,12 @@
 
                     <ToggleSwitch Header="Launch Slipstream when you sign in"
                                   IsOn="{x:Bind ViewModel.AutostartEnabled, Mode=TwoWay}" />
+
+                    <TextBlock Text="{x:Bind ViewModel.AutostartError, Mode=OneWay}"
+                               Style="{StaticResource MeridianBodyStyle}"
+                               Foreground="{ThemeResource MeridianWarningBrush}"
+                               Visibility="{x:Bind ViewModel.HasAutostartError, Mode=OneWay, Converter={StaticResource BoolToVisibilityConverter}}"
+                               TextWrapping="Wrap" />
                 </StackPanel>
             </meridian:MeridianCard>
 

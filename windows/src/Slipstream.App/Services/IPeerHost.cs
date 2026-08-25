@@ -25,6 +25,22 @@ public interface IPeerHost
     /// discovery has completed.</summary>
     TimeSpan? DiscoveryElapsed { get; }
 
+    /// <summary>Whether discovery/reconnect attempts are currently suppressed — see
+    /// <see cref="PauseDiscovery"/>.</summary>
+    bool IsDiscoveryPaused { get; }
+
+    /// <summary>Stops this host from searching for or reconnecting to the paired peer.
+    /// <see cref="StartAsync"/> and <see cref="ReconnectAsync"/> become no-ops (returning
+    /// without attempting discovery) until <see cref="ResumeDiscovery"/> is called. Wired to
+    /// the tray icon's "Pause discovery" menu item (Task 15) so a user who wants Slipstream
+    /// quiet on a given network can stop it probing without quitting the app.</summary>
+    void PauseDiscovery();
+
+    /// <summary>Re-allows discovery/reconnect after <see cref="PauseDiscovery"/>. Does not by
+    /// itself trigger a new attempt — the next <see cref="ReconnectAsync"/> call (e.g. from
+    /// the shell's own retry loop) will proceed normally.</summary>
+    void ResumeDiscovery();
+
     event Action<PeerConnectionState, string?, string?>? StateChanged;
     Task StartAsync(CancellationToken ct);
     Task<bool> ReconnectAsync(CancellationToken ct);

@@ -36,6 +36,7 @@ public sealed partial class SettingsViewModel : ObservableObject
     private readonly IPeerHost _peerHost;
     private readonly Func<CancellationToken, Task>? _pairDeviceLauncher;
     private readonly DispatcherQueue? _dispatcher;
+    private readonly AutostartService? _autostartService;
 
     private SettingsData _data;
 
@@ -44,12 +45,14 @@ public sealed partial class SettingsViewModel : ObservableObject
     private AppTheme _theme;
     private bool _autostartEnabled;
     private string _bandText;
+    private string? _autostartError;
 
     public SettingsViewModel(
         SettingsStore store,
         IPeerHost peerHost,
         Func<CancellationToken, Task>? pairDeviceLauncher = null,
-        DispatcherQueue? dispatcher = null)
+        DispatcherQueue? dispatcher = null,
+        AutostartService? autostartService = null)
     {
         ArgumentNullException.ThrowIfNull(store);
         ArgumentNullException.ThrowIfNull(peerHost);
@@ -58,12 +61,22 @@ public sealed partial class SettingsViewModel : ObservableObject
         _peerHost = peerHost;
         _pairDeviceLauncher = pairDeviceLauncher;
         _dispatcher = dispatcher ?? TryGetCurrentDispatcher();
+        _autostartService = autostartService;
 
         _data = _store.Load();
         _streamCount = _data.StreamCount;
         _downloadDirectory = _data.DownloadDirectory;
         _theme = _data.Theme;
-        _autostartEnabled = _data.AutostartEnabled;
+
+        // The real Task Scheduler state (queried live) is the source of truth for what
+        // Settings shows on load, not the persisted preference alone — a task deleted by
+        // hand, or one that failed to register on a previous run, should not leave the
+        // toggle silently lying. When no AutostartService is supplied (e.g. plain
+        // preference-only tests), fall back to the stored preference exactly as Task 14 did.
+        _autostartEnabled = _autostartService?.IsEnabled ?? _data.AutostartEnabled;
+        if (_autostartService is not null && _autostartEnabled != _data.AutostartEnabled)
+            Persist(_data with { AutostartEnabled = _autostartEnabled });
+
         _bandText = FormatBand(peerHost.Band);
 
         PairDeviceCommand = new AsyncRelayCommand(PairDeviceAsync);
@@ -109,18 +122,59 @@ public sealed partial class SettingsViewModel : ObservableObject
         }
     }
 
-    /// <summary>The user's stored preference for launching at sign-in. This task persists the
-    /// preference only — see the class remarks for why the actual Task Scheduler
-    /// registration is left to Task 15.</summary>
+    /// <summary>The user's autostart preference. When an <see cref="AutostartService"/> was
+    /// supplied, setting this actually creates/removes the real Task Scheduler logon task —
+    /// the persisted bool and the OS state are kept in sync, not two disconnected sources of
+    /// truth. If the real registration fails (e.g. a permissions problem), the toggle reverts
+    /// and <see cref="AutostartError"/> reports why, rather than silently pretending it
+    /// worked.</summary>
     public bool AutostartEnabled
     {
         get => _autostartEnabled;
         set
         {
+            if (_autostartEnabled == value) return;
+
+            if (_autostartService is not null)
+            {
+                try
+                {
+                    if (value) _autostartService.Enable();
+                    else _autostartService.Disable();
+                    AutostartError = null;
+                }
+                catch (InvalidOperationException ex)
+                {
+                    // Direct, no apology, names the next step (per spec §15's error voice):
+                    // report what happened and leave the toggle where it actually is, rather
+                    // than showing a state that is not real.
+                    AutostartError = $"Couldn't {(value ? "enable" : "disable")} start at sign-in. {ex.Message}";
+                    OnPropertyChanged(nameof(AutostartEnabled));
+                    return;
+                }
+            }
+
             if (SetProperty(ref _autostartEnabled, value))
                 Persist(_data with { AutostartEnabled = value });
         }
     }
+
+    /// <summary>Set when the last <see cref="AutostartEnabled"/> change failed to apply to
+    /// the real Task Scheduler registration; null otherwise. SettingsPage surfaces this as an
+    /// inline error rather than letting the toggle silently fail.</summary>
+    public string? AutostartError
+    {
+        get => _autostartError;
+        private set
+        {
+            if (SetProperty(ref _autostartError, value))
+                OnPropertyChanged(nameof(HasAutostartError));
+        }
+    }
+
+    /// <summary>Convenience for the XAML binding — WinUI's <c>BoolToVisibilityConverter</c>
+    /// needs a bool, and a null-ness check reads more directly here than a converter chain.</summary>
+    public bool HasAutostartError => _autostartError is not null;
 
     /// <summary>The Wi-Fi band the shell currently reports for the connected peer (e.g. "5
     /// GHz"), or "Unknown" — feeds the "PC hosts the hotspot" explainer per spec §16.</summary>

@@ -18,7 +18,8 @@ public sealed partial class SettingsPage : Page
     {
         _peerHost = peerHost;
         ViewModel = new Slipstream.App.Pages.SettingsViewModel(
-            store, peerHost, pairDeviceLauncher: LaunchPairingDialogAsync);
+            store, peerHost, pairDeviceLauncher: LaunchPairingDialogAsync,
+            autostartService: new AutostartService("Slipstream"));
 
         InitializeComponent();
 

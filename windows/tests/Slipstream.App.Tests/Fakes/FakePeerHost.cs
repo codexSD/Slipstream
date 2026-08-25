@@ -15,6 +15,12 @@ public sealed class FakePeerHost : IPeerHost
     public string? DiscoveryStrategy { get; private set; }
     public TimeSpan? DiscoveryElapsed { get; private set; }
 
+    public bool IsDiscoveryPaused { get; private set; }
+
+    public void PauseDiscovery() => IsDiscoveryPaused = true;
+
+    public void ResumeDiscovery() => IsDiscoveryPaused = false;
+
     public event Action<PeerConnectionState, string?, string?>? StateChanged;
 
     /// <summary>Set true once <see cref="PairAsync"/> has run its confirm callback to

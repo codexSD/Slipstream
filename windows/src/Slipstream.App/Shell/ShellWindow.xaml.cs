@@ -67,6 +67,35 @@ public sealed partial class ShellWindow : Window
         SetTitleBar(AppTitleBar);
 
         AppWindow.SetIcon("Assets/AppIcon.ico");
+
+        AppWindow.Closing += OnAppWindowClosing;
+    }
+
+    /// <summary>Set by the tray icon's "Quit" handler right before it closes this window for
+    /// real — the one path that bypasses hide-to-tray (Task 15, plan §14).</summary>
+    public bool AllowExit { get; set; }
+
+    /// <summary>Restores and focuses this window — the tray icon's "Show" action and a
+    /// second app launch both funnel here (Task 15's single-instance handling).</summary>
+    public void ShowAndActivate()
+    {
+        AppWindow.Show();
+        Activate();
+
+        // AppWindow.Show() alone can leave the window behind other apps if it was minimized
+        // to the tray rather than merely occluded; bring it fully forward.
+        var presenter = AppWindow.Presenter as Microsoft.UI.Windowing.OverlappedPresenter;
+        presenter?.Restore();
+    }
+
+    private void OnAppWindowClosing(Microsoft.UI.Windowing.AppWindow sender, Microsoft.UI.Windowing.AppWindowClosingEventArgs args)
+    {
+        if (AllowExit) return;
+
+        // Closing the main window hides it to the tray instead of exiting the process (plan
+        // §14) — only the tray menu's Quit (which sets AllowExit first) really closes it.
+        args.Cancel = true;
+        AppWindow.Hide();
     }
 
     private void NavList_SelectionChanged(object sender, SelectionChangedEventArgs e)

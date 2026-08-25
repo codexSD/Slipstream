@@ -96,9 +96,18 @@ class MulticastStrategy(
     private suspend fun start() = lifecycleMutex.withLock {
         if (refCount == 0) {
             multicastLock.acquire()
-            val newTransport = transportFactory()
-            transport = newTransport
-            receiveJob = receiverScope.launch { receiveLoop(newTransport) }
+            try {
+                val newTransport = transportFactory()
+                transport = newTransport
+                receiveJob = receiverScope.launch { receiveLoop(newTransport) }
+            } catch (e: Throwable) {
+                // Undo the partial start so the lock isn't leaked and refCount stays at
+                // 0 for the next find() to retry cleanly, rather than showing a phantom
+                // count with no transport ever set up.
+                transport = null
+                multicastLock.release()
+                throw e
+            }
         }
         refCount++
     }

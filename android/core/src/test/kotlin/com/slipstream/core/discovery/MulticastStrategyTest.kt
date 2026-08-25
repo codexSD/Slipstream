@@ -224,4 +224,60 @@ class MulticastStrategyTest {
             dir.deleteRecursively()
         }
     }
+
+    @Test
+    fun `a failing transportFactory releases the lock and leaves refCount usable for the next find`() = runTest {
+        val dir = createTempDirectory().toFile()
+        try {
+            val identityA = DeviceIdentity.createNew("Device A")
+            val identityB = DeviceIdentity.createNew("Device B")
+            val pairedStore = PairedPeerStore(dir)
+            pairedStore.store(PairedPeer(identityB.deviceId, identityB.fingerprint, identityB.certificate))
+
+            val bus = FakeBus()
+            val addr = InetSocketAddress(InetAddress.getByName("10.0.0.1"), SlipstreamPorts.DISCOVERY)
+            val lock = CountingMulticastLock()
+            var shouldFail = true
+
+            val strategy = MulticastStrategy(
+                identity = identityA,
+                pairedPeerStore = pairedStore,
+                probe = PeerProbe { null },
+                transportFactory = {
+                    if (shouldFail) throw SecurityException("multicast transiently restricted")
+                    FakeMulticastTransport(addr, bus)
+                },
+                multicastLock = lock,
+                receiverScope = backgroundScope,
+            )
+
+            // First find() fails inside transportFactory(). The lock must not leak, and
+            // refCount must be left at 0 (not stuck showing a phantom held reference).
+            var threw = false
+            try {
+                strategy.find(network)
+            } catch (e: SecurityException) {
+                threw = true
+            }
+            assertTrue("expected find() to propagate the transportFactory failure", threw)
+            assertEquals(1, lock.acquireCount)
+            assertEquals(
+                "lock must be released when transportFactory() throws, not leaked",
+                1,
+                lock.releaseCount,
+            )
+
+            // A subsequent successful find() must still work correctly, proving refCount
+            // wasn't left in a bad state by the failed attempt.
+            shouldFail = false
+            val resultDeferred = async { strategy.find(network) }
+            advanceUntilIdle()
+            resultDeferred.cancelAndJoin()
+
+            assertEquals(2, lock.acquireCount)
+            assertEquals(2, lock.releaseCount)
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
 }

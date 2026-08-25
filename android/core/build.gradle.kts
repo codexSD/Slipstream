@@ -33,8 +33,6 @@ android {
 dependencies {
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.serialization.json)
-    implementation(libs.bouncycastle.bcprov)
-    implementation(libs.bouncycastle.bcpkix)
 
     testImplementation(libs.junit)
     testImplementation(libs.robolectric)

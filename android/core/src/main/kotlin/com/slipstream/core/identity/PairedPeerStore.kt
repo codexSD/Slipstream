@@ -1,7 +1,7 @@
 package com.slipstream.core.identity
 
 import java.io.File
-import kotlinx.serialization.json.Json
+import kotlinx.serialization.SerializationException
 
 /**
  * PairedPeerStore manages a single paired peer, persisted as JSON.
@@ -44,8 +44,11 @@ class PairedPeerStore(private val dir: File) {
         // Only JSON parse errors degrade to unpaired
         return try {
             PairedPeer.fromJson(json)
-        } catch (e: Exception) {
+        } catch (e: SerializationException) {
             // On JSON parse failure, degrade to unpaired
+            null
+        } catch (e: IllegalArgumentException) {
+            // kotlinx.serialization also throws this for malformed/invalid JSON content
             null
         }
     }

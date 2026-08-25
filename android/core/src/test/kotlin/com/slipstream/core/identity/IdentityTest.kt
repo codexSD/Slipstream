@@ -54,6 +54,27 @@ class IdentityTest {
     }
 
     @Test
+    fun `loadOrCreate preserves the exact deviceId across a simulated app restart`() {
+        val dir = createTempDirectory().toFile()
+        try {
+            val name = "Test"
+            val first = DeviceIdentity.loadOrCreate(dir, name)
+
+            // Simulate an app restart: a fresh call against the same directory must reload,
+            // not recreate, the identity - and must return the identical deviceId, not a
+            // placeholder or a freshly derived value.
+            val second = DeviceIdentity.loadOrCreate(dir, name)
+
+            assertEquals(first.deviceId, second.deviceId)
+            assertEquals(32, second.deviceId.length)
+            assertTrue(second.deviceId.matches(Regex("^[0-9a-f]{32}$")))
+            assertEquals(first.fingerprint, second.fingerprint)
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
     fun `PairedPeerStore round-trip saves and loads JSON`() {
         val dir = Files.createTempDirectory("peer-store").toFile()
         try {

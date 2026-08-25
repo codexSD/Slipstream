@@ -13,4 +13,16 @@ public static class TestPaths
 
         return Path.Combine(dir.FullName, "windows", "src", "Slipstream.Meridian", relativePath);
     }
+
+    public static string App(string relativePath)
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null && !Directory.Exists(Path.Combine(dir.FullName, "windows", "src", "Slipstream.App")))
+            dir = dir.Parent;
+
+        if (dir is null)
+            throw new DirectoryNotFoundException("Could not locate windows/src/Slipstream.App from the test output directory.");
+
+        return Path.Combine(dir.FullName, "windows", "src", "Slipstream.App", relativePath);
+    }
 }

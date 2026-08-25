@@ -48,10 +48,10 @@
                             themed selection brushes ListViewItem's default template reads,
                             scoped to this list only, rather than touching the app theme.
                         -->
-                        <SolidColorBrush x:Key="ListViewItemBackgroundSelected" Color="{ThemeResource MeridianBrandBrush}" />
-                        <SolidColorBrush x:Key="ListViewItemBackgroundSelectedPointerOver" Color="{ThemeResource MeridianBrandBrush}" />
-                        <SolidColorBrush x:Key="ListViewItemBackgroundSelectedPressed" Color="{ThemeResource MeridianBrandStrongBrush}" />
-                        <SolidColorBrush x:Key="ListViewItemForegroundSelected" Color="{ThemeResource MeridianOnBrandBrush}" />
+                        <StaticResource x:Key="ListViewItemBackgroundSelected" ResourceKey="MeridianBrandBrush" />
+                        <StaticResource x:Key="ListViewItemBackgroundSelectedPointerOver" ResourceKey="MeridianBrandBrush" />
+                        <StaticResource x:Key="ListViewItemBackgroundSelectedPressed" ResourceKey="MeridianBrandStrongBrush" />
+                        <StaticResource x:Key="ListViewItemForegroundSelected" ResourceKey="MeridianOnBrandBrush" />
                     </ListView.Resources>
                     <ListView.ItemTemplate>
                         <DataTemplate x:DataType="local:ShellDestination">

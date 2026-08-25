@@ -24,6 +24,7 @@ public sealed class PartFile : IAsyncDisposable
 
     private readonly FileStream _stream;
     private readonly Lock _bitmapGate = new();
+    private readonly SemaphoreSlim _persistGate = new(1, 1);
     private DateTimeOffset _lastPersist = DateTimeOffset.MinValue;
     private bool _dirty;
     private bool _completed;
@@ -195,9 +196,20 @@ public sealed class PartFile : IAsyncDisposable
             _dirty = false;
         }
 
-        var staging = StatePath + ".tmp";
-        await File.WriteAllTextAsync(staging, payload, cancellationToken);
-        File.Move(staging, StatePath, overwrite: true);
+        // Overlapping persists are possible: a slow write can still be in flight when the
+        // next debounce window elapses. Serialize the write-and-move here (not the bit
+        // flip) so overlapping calls queue instead of corrupting the shared temp file.
+        await _persistGate.WaitAsync(cancellationToken);
+        try
+        {
+            var staging = StatePath + ".tmp";
+            await File.WriteAllTextAsync(staging, payload, cancellationToken);
+            File.Move(staging, StatePath, overwrite: true);
+        }
+        finally
+        {
+            _persistGate.Release();
+        }
     }
 
     public async ValueTask DisposeAsync()
@@ -216,5 +228,7 @@ public sealed class PartFile : IAsyncDisposable
 
             await _stream.DisposeAsync();
         }
+
+        _persistGate.Dispose();
     }
 }

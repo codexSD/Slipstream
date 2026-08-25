@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Text.Json;
 using Slipstream.Core.Transfer;
 
 namespace Slipstream.Core.Tests.Transfer;
@@ -182,6 +183,59 @@ public class PartFileTests : IDisposable
         }
 
         Assert.Equal(32 * Chunk, new FileInfo(Destination).Length);
+    }
+
+    [Fact]
+    public async Task Overlapping_debounced_persists_never_corrupt_the_sidecar()
+    {
+        // Force many chunk writes to straddle multiple 500ms debounce windows under heavy
+        // concurrency, so several PersistStateAsync calls are in flight/queued at once.
+        // The sidecar must always be valid, parseable JSON — never a torn/interleaved write
+        // from two overlapping writers sharing the same staging file.
+        const int chunkCount = 24;
+        var (data, crc) = ChunkOf(Chunk);
+        string statePath;
+        var sawInvalidJson = false;
+
+        await using (var part = PartFile.OpenOrCreate(Destination, _transfer, chunkCount * Chunk, Chunk))
+        {
+            statePath = part.PartPath + ".state";
+
+            var writers = Enumerable.Range(0, chunkCount).Select(async i =>
+            {
+                // Spread writes across debounce boundaries instead of firing them all at once.
+                await Task.Delay((i % 6) * 100);
+                await part.WriteChunkAsync(i, data, crc, CancellationToken.None);
+
+                // Probe the sidecar concurrently with other in-flight persists — any torn
+                // write from a shared temp file would show up here as invalid JSON.
+                if (File.Exists(statePath))
+                {
+                    try
+                    {
+                        var text = await File.ReadAllTextAsync(statePath);
+                        if (text.Length > 0) JsonDocument.Parse(text);
+                    }
+                    catch (JsonException)
+                    {
+                        sawInvalidJson = true;
+                    }
+                    catch (IOException)
+                    {
+                        // Sidecar mid-rename; not a corruption signal, just a timing miss.
+                    }
+                }
+            });
+
+            await Task.WhenAll(writers);
+
+            Assert.True(part.Bitmap.IsComplete);
+        }
+
+        Assert.False(sawInvalidJson, "sidecar contained invalid JSON while persists overlapped");
+
+        var finalState = await File.ReadAllTextAsync(statePath);
+        JsonDocument.Parse(finalState); // still parses cleanly after disposal's flush
     }
 
     [Fact]

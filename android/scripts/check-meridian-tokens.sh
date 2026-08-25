@@ -25,7 +25,7 @@ if [ -n "$darkCalls" ]; then
 fi
 
 echo "==> Elevation above 1dp"
-elevation=$(grep -rn --include="*.kt" -E "(shadow|tonal)Elevation\s*=\s*([2-9]|[1-9][0-9])\.dp" "$MODULE" || true)
+elevation=$(grep -rn --include="*.kt" -E "((shadow|tonal|default)Elevation\s*=\s*([2-9]|[1-9][0-9])\.dp|[Ee]levation\s*\(\s*[^)]*[2-9][0-9]*\.dp)" "$MODULE" || true)
 if [ -n "$elevation" ]; then
   echo "FAIL: Meridian caps elevation at 1dp — structure comes from strokes:"
   echo "$elevation"

@@ -71,7 +71,7 @@ fun MeridianStatusPill(
         if (icon != null) {
             Icon(
                 imageVector = icon,
-                contentDescription = status.name,
+                contentDescription = null,
                 tint = signal,
                 modifier = Modifier.size(14.dp),
             )

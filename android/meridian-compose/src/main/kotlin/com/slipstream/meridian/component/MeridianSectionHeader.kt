@@ -5,7 +5,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -42,9 +41,7 @@ fun MeridianSectionHeader(
         )
 
         if (actionLabel != null && onActionClick != null) {
-            TextButton(onClick = onActionClick) {
-                Text(text = actionLabel, style = MeridianText.button, color = colors.brand)
-            }
+            MeridianTextButton(label = actionLabel, onClick = onActionClick)
         }
     }
 }

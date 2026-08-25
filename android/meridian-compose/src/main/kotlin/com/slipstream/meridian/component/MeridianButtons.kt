@@ -13,6 +13,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -75,6 +76,7 @@ fun MeridianSecondaryButton(
         colors = ButtonDefaults.outlinedButtonColors(
             containerColor = colors.surface,
             contentColor = colors.brand,
+            disabledContainerColor = colors.stroke,
             disabledContentColor = colors.inkMuted,
         ),
     ) {
@@ -93,11 +95,28 @@ private fun ButtonContent(label: String, icon: ImageVector?) {
     Text(text = label, style = MeridianText.button)
 }
 
+/** Brand-coloured text-only action. Shared by tertiary "see all"/"retry" call sites. */
+@Composable
+fun MeridianTextButton(
+    label: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    TextButton(onClick = onClick, modifier = modifier) {
+        Text(text = label, style = MeridianText.button, color = MeridianTheme.colors.brand)
+    }
+}
+
 @Preview(name = "Buttons light")
 @Composable
 private fun MeridianButtonsLightPreview() {
     MeridianTheme(darkTheme = false) {
-        MeridianPrimaryButton("Send files", onClick = {}, icon = Icons.AutoMirrored.Filled.Send)
+        androidx.compose.foundation.layout.Column(
+            verticalArrangement = Arrangement.spacedBy(MeridianSpacing.sm),
+        ) {
+            MeridianPrimaryButton("Send files", onClick = {}, icon = Icons.AutoMirrored.Filled.Send)
+            MeridianSecondaryButton("Browse PC", onClick = {})
+        }
     }
 }
 
@@ -105,6 +124,11 @@ private fun MeridianButtonsLightPreview() {
 @Composable
 private fun MeridianButtonsDarkPreview() {
     MeridianTheme(darkTheme = true) {
-        MeridianSecondaryButton("Browse PC", onClick = {})
+        androidx.compose.foundation.layout.Column(
+            verticalArrangement = Arrangement.spacedBy(MeridianSpacing.sm),
+        ) {
+            MeridianPrimaryButton("Send files", onClick = {}, icon = Icons.AutoMirrored.Filled.Send)
+            MeridianSecondaryButton("Browse PC", onClick = {})
+        }
     }
 }

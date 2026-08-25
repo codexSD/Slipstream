@@ -63,7 +63,9 @@ class MeridianStatusPillTest {
                 )
             }
         }
-        compose.onNodeWithContentDescription("Warning").assertIsDisplayed()
+        // The icon is decorative (contentDescription = null) — the mandatory label text
+        // is the accessible cue, per spec §12.
+        compose.onNodeWithText("2.4 GHz — slower link").assertIsDisplayed()
     }
 
     @Test

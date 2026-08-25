@@ -7,7 +7,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -55,34 +54,36 @@ fun MeridianStateView(
 ) {
     val colors = MeridianTheme.colors
 
-    when (state) {
-        MeridianUiState.Content -> content()
+    Box(modifier = modifier) {
+        when (state) {
+            MeridianUiState.Content -> content()
 
-        MeridianUiState.Loading -> Box(
-            modifier = modifier.fillMaxSize(),
-            contentAlignment = Alignment.Center,
-        ) {
-            CircularProgressIndicator(
-                color = colors.brand,
-                modifier = Modifier.testTag("meridian-loading"),
+            MeridianUiState.Loading -> Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center,
+            ) {
+                CircularProgressIndicator(
+                    color = colors.brand,
+                    modifier = Modifier.testTag("meridian-loading"),
+                )
+            }
+
+            is MeridianUiState.Empty -> Message(
+                modifier = Modifier,
+                message = state.message,
+                messageColor = colors.inkMuted,
+                actionLabel = state.actionLabel,
+                onAction = state.onAction,
+            )
+
+            is MeridianUiState.Error -> Message(
+                modifier = Modifier,
+                message = state.message,
+                messageColor = colors.critical,
+                actionLabel = if (state.onRetry != null) state.retryLabel else null,
+                onAction = state.onRetry,
             )
         }
-
-        is MeridianUiState.Empty -> Message(
-            modifier = modifier,
-            message = state.message,
-            messageColor = colors.inkMuted,
-            actionLabel = state.actionLabel,
-            onAction = state.onAction,
-        )
-
-        is MeridianUiState.Error -> Message(
-            modifier = modifier,
-            message = state.message,
-            messageColor = colors.critical,
-            actionLabel = if (state.onRetry != null) state.retryLabel else null,
-            onAction = state.onRetry,
-        )
     }
 }
 
@@ -108,21 +109,31 @@ private fun Message(
             )
 
             if (actionLabel != null && onAction != null) {
-                TextButton(onClick = onAction) {
-                    Text(
-                        text = actionLabel,
-                        style = MeridianText.button,
-                        color = MeridianTheme.colors.brand,
-                    )
-                }
+                MeridianTextButton(label = actionLabel, onClick = onAction)
             }
         }
     }
 }
 
+@Preview(name = "Loading state light")
+@Composable
+private fun MeridianStateViewLoadingLightPreview() {
+    MeridianTheme(darkTheme = false) {
+        MeridianStateView(MeridianUiState.Loading) {}
+    }
+}
+
+@Preview(name = "Loading state dark")
+@Composable
+private fun MeridianStateViewLoadingDarkPreview() {
+    MeridianTheme(darkTheme = true) {
+        MeridianStateView(MeridianUiState.Loading) {}
+    }
+}
+
 @Preview(name = "Empty state light")
 @Composable
-private fun MeridianStateViewEmptyPreview() {
+private fun MeridianStateViewEmptyLightPreview() {
     MeridianTheme(darkTheme = false) {
         MeridianStateView(
             MeridianUiState.Empty("Nothing transferred yet. Pick a file to send.", "Send a file") {},
@@ -130,9 +141,29 @@ private fun MeridianStateViewEmptyPreview() {
     }
 }
 
+@Preview(name = "Empty state dark")
+@Composable
+private fun MeridianStateViewEmptyDarkPreview() {
+    MeridianTheme(darkTheme = true) {
+        MeridianStateView(
+            MeridianUiState.Empty("Nothing transferred yet. Pick a file to send.", "Send a file") {},
+        ) {}
+    }
+}
+
+@Preview(name = "Error state light")
+@Composable
+private fun MeridianStateViewErrorLightPreview() {
+    MeridianTheme(darkTheme = false) {
+        MeridianStateView(
+            MeridianUiState.Error("Phone not on this network. Searching…", onRetry = {}),
+        ) {}
+    }
+}
+
 @Preview(name = "Error state dark")
 @Composable
-private fun MeridianStateViewErrorPreview() {
+private fun MeridianStateViewErrorDarkPreview() {
     MeridianTheme(darkTheme = true) {
         MeridianStateView(
             MeridianUiState.Error("Phone not on this network. Searching…", onRetry = {}),

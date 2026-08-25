@@ -40,17 +40,22 @@ public sealed class BulkClient
         var alreadyDone = (long)part.Bitmap.CompletedCount * part.ChunkSize;
         var completed = Math.Min(alreadyDone, part.Size);
         var stopwatch = Stopwatch.StartNew();
-        var lastReport = TimeSpan.Zero;
+        var lastReportTicks = 0L;
 
         void Report(int bytes)
         {
             var total = Interlocked.Add(ref completed, bytes);
             if (progress is null) return;
 
-            var elapsed = stopwatch.Elapsed;
-            if (elapsed - lastReport < ProgressInterval && total < part.Size) return;
+            var nowTicks = stopwatch.Elapsed.Ticks;
+            var previous = Interlocked.Read(ref lastReportTicks);
 
-            lastReport = elapsed;
+            if (nowTicks - previous < ProgressInterval.Ticks && total < part.Size) return;
+
+            // Only the thread that wins the exchange reports, so N streams cannot burst.
+            if (Interlocked.CompareExchange(ref lastReportTicks, nowTicks, previous) != previous) return;
+
+            var elapsed = TimeSpan.FromTicks(nowTicks);
             var rate = elapsed.TotalSeconds > 0 ? (total - alreadyDone) / elapsed.TotalSeconds : 0;
             progress.Report(new TransferProgress(transferId, total, part.Size, rate));
         }

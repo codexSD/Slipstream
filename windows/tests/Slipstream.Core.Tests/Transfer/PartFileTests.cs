@@ -291,6 +291,28 @@ public class PartFileTests : IDisposable
     }
 
     [Fact]
+    public async Task An_existing_destination_survives_a_failed_move()
+    {
+        await File.WriteAllTextAsync(Destination, "the user's existing file");
+
+        var (data, crc) = ChunkOf(Chunk);
+        await using var part = PartFile.OpenOrCreate(Destination, _transfer, Chunk, Chunk);
+        await part.WriteChunkAsync(0, data, crc, CancellationToken.None);
+
+        // Hold the destination open so the replace cannot succeed. On Windows, File.Move
+        // against a handle opened with FileShare.None surfaces as
+        // UnauthorizedAccessException rather than IOException, so we assert broadly on
+        // the failure itself — the behavior under test is that the original survives.
+        await using (new FileStream(Destination, FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            await Assert.ThrowsAnyAsync<Exception>(() => part.CompleteAsync(CancellationToken.None));
+        }
+
+        // The pre-existing file must still be there, intact.
+        Assert.Equal("the user's existing file", await File.ReadAllTextAsync(Destination));
+    }
+
+    [Fact]
     public async Task CollectStale_removes_old_part_files_only()
     {
         var (data, crc) = ChunkOf(Chunk);

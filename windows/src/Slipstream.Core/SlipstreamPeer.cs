@@ -35,6 +35,7 @@ public sealed class SlipstreamPeer : IAsyncDisposable
     private BulkServer? _bulkServer;
     private MediaServer? _mediaServer;
     private TransferEngine? _engine;
+    private NetworkAddressChangedEventHandler? _networkChangedHandler;
 
     public SlipstreamPeer(string stateDirectory, string displayName)
     {
@@ -118,7 +119,10 @@ public sealed class SlipstreamPeer : IAsyncDisposable
 
         // Spec §5: a network switch is routine. Tear down, rediscover, resume.
         // (The event lives on NetworkChange, not NetworkInterface.)
-        NetworkChange.NetworkAddressChanged += (_, _) => NetworkChanged?.Invoke();
+        // NetworkChange.NetworkAddressChanged is static: an un-detached handler roots this
+        // peer for the process lifetime. The test suite builds two peers per rig.
+        _networkChangedHandler = (_, _) => NetworkChanged?.Invoke();
+        NetworkChange.NetworkAddressChanged += _networkChangedHandler;
 
         // Spec §7: sweep orphaned .part files on start.
         PartFile.CollectStale(DownloadDirectory, TimeSpan.FromDays(7));
@@ -138,6 +142,12 @@ public sealed class SlipstreamPeer : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        if (_networkChangedHandler is not null)
+        {
+            NetworkChange.NetworkAddressChanged -= _networkChangedHandler;
+            _networkChangedHandler = null;
+        }
+
         if (_server is not null) await _server.DisposeAsync();
         if (_bulkServer is not null) await _bulkServer.DisposeAsync();
         if (_mediaServer is not null) await _mediaServer.DisposeAsync();

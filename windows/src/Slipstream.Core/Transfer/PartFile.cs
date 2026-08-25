@@ -152,8 +152,10 @@ public sealed class PartFile : IAsyncDisposable
         await _stream.DisposeAsync();
         _completed = true;
 
-        if (File.Exists(DestinationPath)) File.Delete(DestinationPath);
-        File.Move(PartPath, DestinationPath);
+        // File.Move with overwrite is atomic on NTFS: either the destination is replaced or
+        // it is untouched. Deleting first opens a window where a failed move leaves the user
+        // with neither their old file nor the new one.
+        File.Move(PartPath, DestinationPath, overwrite: true);
 
         if (File.Exists(StatePath)) File.Delete(StatePath);
 
@@ -182,6 +184,18 @@ public sealed class PartFile : IAsyncDisposable
             {
                 // In use by a live transfer. Leave it.
             }
+        }
+
+        // Orphaned sidecars: a .state whose .part was already removed (e.g. by a prior
+        // sweep that hit an IOException after deleting the .part but before the sidecar,
+        // or a .part cleaned up some other way) would otherwise never be reclaimed.
+        foreach (var path in Directory.EnumerateFiles(directory, "*" + PartSuffix + StateSuffix, SearchOption.AllDirectories))
+        {
+            var partPath = path[..^StateSuffix.Length];
+            if (File.Exists(partPath)) continue;
+            if (File.GetLastWriteTimeUtc(path) >= cutoff) continue;
+
+            try { File.Delete(path); removed++; } catch (IOException) { }
         }
 
         return removed;

@@ -55,12 +55,17 @@ class AndroidNetworkInfo internal constructor(
         val connectivityManager =
             context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
 
-        selectLocalInterface(interfaces())?.let { selected ->
+        // The active network's gateways do double duty: they tell [selectLocalInterface] which
+        // of two tied interfaces this device is a *client* on (see its doc), and they supply
+        // the selected network's own gateway when one of them turns out to be in its subnet.
+        val gatewayAddresses = connectivityManager?.activeGateways().orEmpty()
+
+        selectLocalInterface(interfaces(), gatewayAddresses)?.let { selected ->
             return buildLocalNetwork(
                 interfaceName = selected.name,
                 localAddress = selected.address,
                 prefixLength = selected.prefixLength,
-                gatewayAddresses = connectivityManager?.activeGateways().orEmpty(),
+                gatewayAddresses = gatewayAddresses,
             )
         }
 
@@ -117,6 +122,9 @@ internal data class InterfaceCandidate(
     val isUp: Boolean,
     val isLoopback: Boolean,
     val addresses: List<Pair<InetAddress, Int>>,
+    /** The kernel's interface index. Only ever used as the last-resort tie-break key in
+     * [selectLocalInterface]; defaults to 0 for candidates that cannot report one. */
+    val index: Int = 0,
 )
 
 /** The interface and address [selectLocalInterface] settled on. */
@@ -141,6 +149,7 @@ internal fun liveInterfaceCandidates(): List<InterfaceCandidate> =
                 addresses = nif.interfaceAddresses.mapNotNull { ia ->
                     ia.address?.let { it to ia.networkPrefixLength.toInt() }
                 },
+                index = runCatching { nif.index }.getOrDefault(0),
             )
         }
     } catch (e: java.net.SocketException) {
@@ -150,18 +159,67 @@ internal fun liveInterfaceCandidates(): List<InterfaceCandidate> =
 /**
  * Pure candidate selection: the first local IPv4 address on an interface that is up and
  * not loopback, preferring WiFi/AP/ethernet-style interfaces over cellular uplinks.
+ *
+ * Interfaces that tie on that name priority — STA+AP concurrency, where the device is a Wi-Fi
+ * client on one `wlan` interface and hosting a hotspot on another — are ordered by two further
+ * keys, in this order:
+ *
+ *  1. **Serving beats client.** An interface whose subnet contains one of [gatewayAddresses]
+ *     is one where some *other* box is the gateway, i.e. this device is a client on it. An
+ *     interface with no gateway in its subnet is one this device is itself serving — the AP
+ *     side, and the only side a PC that joined the hotspot can reach. Spec §5's primary
+ *     scenario is "the phone is the PC's default gateway", so the AP side wins.
+ *  2. **Lowest interface index.** A documented, stable, reproducible key for when nothing
+ *     above separates them — as opposed to enumeration order, which is merely whatever the
+ *     kernel happened to hand back.
+ *
+ * The tie-break never outranks the priority band: it only orders interfaces already equal on it.
+ *
+ * NOTE: this path is unit-tested with synthetic interfaces but **not hardware-verified** in an
+ * actual STA+AP configuration — no such device was available. The single-interface cases it
+ * shares code with *are* hardware-verified (commit `0f7c662`).
  */
-internal fun selectLocalInterface(candidates: List<InterfaceCandidate>): SelectedInterface? =
+internal fun selectLocalInterface(
+    candidates: List<InterfaceCandidate>,
+    gatewayAddresses: List<InetAddress> = emptyList(),
+): SelectedInterface? =
     candidates
         .filter { it.isUp && !it.isLoopback }
-        .sortedBy { interfacePriority(it.name) }
-        .firstNotNullOfOrNull { candidate ->
+        .mapNotNull { candidate ->
             candidate.addresses
                 .firstOrNull { (address, _) ->
                     address is Inet4Address && !address.isLoopbackAddress && LanGuard.isLocal(address)
                 }
-                ?.let { (address, prefix) -> SelectedInterface(candidate.name, address, prefix) }
+                ?.let { (address, prefix) -> candidate to SelectedInterface(candidate.name, address, prefix) }
         }
+        .minWithOrNull(
+            compareBy(
+                { (candidate, _) -> interfacePriority(candidate.name) },
+                { (_, selected) -> if (isServedByAGateway(selected, gatewayAddresses)) 1 else 0 },
+                { (candidate, _) -> candidate.index },
+            ),
+        )
+        ?.second
+
+/**
+ * Whether one of [gatewayAddresses] sits inside [selected]'s own subnet — the signature of an
+ * interface on which this device is a *client* of someone else's router, rather than the one
+ * serving the subnet.
+ */
+private fun isServedByAGateway(
+    selected: SelectedInterface,
+    gatewayAddresses: List<InetAddress>,
+): Boolean {
+    val networkAddress = runCatching {
+        SubnetMath.networkAddress(selected.address, selected.prefixLength)
+    }.getOrNull() ?: return false
+
+    return gatewayAddresses.any { gateway ->
+        gateway is Inet4Address &&
+            runCatching { SubnetMath.networkAddress(gateway, selected.prefixLength) }
+                .getOrNull() == networkAddress
+    }
+}
 
 /** Lower sorts first. WiFi/AP/tether interfaces beat anything; cellular uplinks lose. */
 private fun interfacePriority(name: String): Int {

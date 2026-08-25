@@ -100,6 +100,55 @@ class NetworkInfoTest {
     }
 
     @Test
+    fun `a STA plus AP tie is broken toward the interface this device is serving`() {
+        // The device is a Wi-Fi client on wlan0 (192.168.1.42, gateway 192.168.1.1 - some
+        // router is serving *it*) while hosting a hotspot on wlan1 (10.199.176.137, no gateway
+        // in that subnet, because this device *is* the gateway there). Both tie at the top of
+        // the wlan/ap priority band, so without a tie-break the winner is enumeration order.
+        // The AP side is the one a PC joining the hotspot can actually reach.
+        val selected = selectLocalInterface(
+            listOf(
+                candidate("wlan0", "192.168.1.42" to 24, index = 3),
+                candidate("wlan1", "10.199.176.137" to 24, index = 9),
+            ),
+            gatewayAddresses = listOf(InetAddress.getByName("192.168.1.1")),
+        )
+
+        assertEquals("wlan1", selected!!.name)
+        assertEquals(InetAddress.getByName("10.199.176.137"), selected.address)
+    }
+
+    @Test
+    fun `a tie with no gateway information falls back to the lowest interface index`() {
+        // Nothing distinguishes the two sides, so the documented stable key decides. Listed in
+        // descending index order on purpose: enumeration order would pick the other one.
+        val selected = selectLocalInterface(
+            listOf(
+                candidate("wlan1", "10.199.176.137" to 24, index = 9),
+                candidate("wlan0", "192.168.1.42" to 24, index = 3),
+            ),
+            gatewayAddresses = emptyList(),
+        )
+
+        assertEquals("wlan0", selected!!.name)
+    }
+
+    @Test
+    fun `the tie-break never outranks the priority band`() {
+        // A cellular interface with the lower index must still lose to a wlan one: the
+        // tie-break only orders interfaces that already tie on priority.
+        val selected = selectLocalInterface(
+            listOf(
+                candidate("rmnet_data0", "10.255.81.4" to 30, index = 1),
+                candidate("wlan1", "10.199.176.137" to 24, index = 9),
+            ),
+            gatewayAddresses = listOf(InetAddress.getByName("10.255.81.1")),
+        )
+
+        assertEquals("wlan1", selected!!.name)
+    }
+
+    @Test
     fun `selectLocalInterface returns null when nothing is usable`() {
         assertNull(selectLocalInterface(listOf(candidate("lo", "127.0.0.1" to 8, isLoopback = true))))
     }
@@ -129,10 +178,12 @@ class NetworkInfoTest {
         vararg addresses: Pair<String, Int>,
         isUp: Boolean = true,
         isLoopback: Boolean = false,
+        index: Int = 0,
     ) = InterfaceCandidate(
         name = name,
         isUp = isUp,
         isLoopback = isLoopback,
+        index = index,
         addresses = addresses.map { (a, p) -> InetAddress.getByName(a) to p },
     )
 

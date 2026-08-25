@@ -146,6 +146,33 @@ public class SlipstreamSessionTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Clipboard_raises_the_ClipboardReceived_event_with_the_exact_text()
+    {
+        string? received = null;
+        _session.ClipboardReceived += text => received = text;
+
+        var reply = await _session.HandleAsync(
+            ControlMessage.Request("clipboard", "9", new ClipboardMessage("copied text")), _cts.Token);
+
+        Assert.Equal("clipboard.ok", reply!.Type);
+        Assert.Equal("copied text", received);
+    }
+
+    [Fact]
+    public async Task Clipboard_does_not_raise_ClipboardReceived_for_an_oversized_payload()
+    {
+        var oversized = new string('x', SlipstreamSession.ClipboardMaxBytes + 1);
+        var raised = false;
+        _session.ClipboardReceived += _ => raised = true;
+
+        var reply = await _session.HandleAsync(
+            ControlMessage.Request("clipboard", "10", new ClipboardMessage(oversized)), _cts.Token);
+
+        Assert.Equal("clipboard.error", reply!.Type);
+        Assert.False(raised);
+    }
+
+    [Fact]
     public async Task Hello_is_answered_with_this_devices_identity()
     {
         // Plan 1's harness answered hello inline. Once the session owns the

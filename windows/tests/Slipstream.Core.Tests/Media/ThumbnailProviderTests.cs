@@ -1,11 +1,9 @@
-using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using Slipstream.Core.Media;
 using Slipstream.Core.Transfer;
 
 namespace Slipstream.Core.Tests.Media;
 
-/*
 [SupportedOSPlatform("windows")]
 public class ThumbnailProviderTests : IDisposable
 {
@@ -74,28 +72,13 @@ public class ThumbnailProviderTests : IDisposable
     }
 
     [Fact]
-    public void Returns_null_for_a_file_with_no_thumbnail()
+    public void Returns_null_for_a_zero_byte_file_of_an_unknown_type()
     {
-        // On systems with generic thumbnail handlers, use a special path that COM won't resolve
-        var path = Path.Combine(_dir, "file\x00name.zzz");
-        try
-        {
-            File.WriteAllBytes(path, []);
-        }
-        catch
-        {
-            // Path with null bytes can't be created; that's expected
-            // Just test with a regular empty file and handle the outcome
-            path = Path.Combine(_dir, "empty.zzz");
-            File.WriteAllBytes(path, []);
-        }
+        var path = Path.Combine(_dir, "empty.slipstream-unknown");
+        File.WriteAllBytes(path, []);
 
-        // On some Windows systems, the shell has generic handlers for unknown types.
-        // This test verifies the behavior when no handler is available or an error occurs.
-        var result = _provider.Generate(path);
-        // Accept either null (no thumbnail) or a path (system-specific handler)
-        // The important thing is that Generate() doesn't crash
-        Assert.True(result == null || File.Exists(result));
+        // No registered handler and no content to render: the shell has nothing to give.
+        Assert.Null(_provider.Generate(path));
     }
 
     [Fact]
@@ -121,4 +104,3 @@ public class ThumbnailProviderTests : IDisposable
         Assert.Null(_provider.Resolve(Guid.NewGuid()));
     }
 }
-*/

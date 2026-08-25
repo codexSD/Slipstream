@@ -72,4 +72,35 @@ public class HistoryViewModelTests : IDisposable
 
         Assert.Contains(queue.Completed, t => t.Path == "/DCIM/100APPLE/IMG_0002.HEIC");
     }
+
+    [Fact]
+    public async Task Items_reflects_a_transfer_completed_after_construction_without_manual_refresh()
+    {
+        var store = new HistoryStore(_path);
+        var host = new Slipstream.App.Tests.Fakes.FakePeerHost();
+        var queue = new TransferQueue(host, maxConcurrent: 1);
+
+        // Mirrors ShellWindow's wiring: the queue's terminal updates are what persist new
+        // entries into the store. HistoryViewModel itself must pick up the change live via its
+        // own ItemUpdated subscription — this test never calls Refresh() or reconstructs the vm.
+        queue.ItemUpdated += item =>
+        {
+            if (item.Status is TransferStatus.Complete or TransferStatus.Failed)
+            {
+                store.Add(new HistoryEntry(
+                    item.Path, item.LocalPath ?? item.Path, item.TotalBytes, item.Status, DateTimeOffset.UtcNow));
+            }
+        };
+
+        var vm = new HistoryViewModel(store, queue);
+        Assert.Empty(vm.Items);
+
+        queue.Enqueue("/DCIM/100APPLE/IMG_0003.HEIC", 20);
+        await queue.WaitForIdleAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
+
+        // No dispatcher was supplied, so HistoryViewModel's RunOnUiThread falls back to running
+        // inline — the update should already be applied synchronously once the queue is idle.
+        var row = Assert.Single(vm.Items);
+        Assert.Equal("/DCIM/100APPLE/IMG_0003.HEIC", row.RemotePath);
+    }
 }

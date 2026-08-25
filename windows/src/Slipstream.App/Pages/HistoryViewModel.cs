@@ -68,9 +68,11 @@ public sealed partial class HistoryRow : ObservableObject
 /// Drives the History page: every persisted <see cref="HistoryEntry"/> from
 /// <see cref="HistoryStore"/>, newest first, with per-row "reveal in folder" and "run again"
 /// actions. Loads once at construction — HistoryStore has no change notifications of its own
-/// (unlike TransferQueue), so <see cref="Refresh"/> re-reads the file; the shell calls it
-/// whenever History becomes the selected destination, which is the standard "on navigate"
-/// refresh point for this kind of page.
+/// (unlike TransferQueue) — and then stays live: it also subscribes to
+/// <see cref="TransferQueue.ItemUpdated"/> (the same event ShellWindow uses to call
+/// <see cref="HistoryStore.Add"/>) and calls <see cref="Refresh"/> whenever a transfer reaches
+/// a terminal Status, so the list reflects newly completed/failed transfers without requiring
+/// navigation away from and back to the History page.
 /// </summary>
 public sealed partial class HistoryViewModel : ObservableObject
 {
@@ -89,6 +91,22 @@ public sealed partial class HistoryViewModel : ObservableObject
         _dispatcher = dispatcher ?? TryGetCurrentDispatcher();
 
         Refresh();
+
+        _queue.ItemUpdated += OnTransferUpdated;
+    }
+
+    // TransferQueue.ItemUpdated fires from whatever background thread ran the transfer (see
+    // TransferQueue's remarks) once with a terminal Status when RunAsync's finally block runs
+    // — the same update ShellWindow uses to append to HistoryStore. Refresh() re-reads the
+    // store and mutates Items, so it must be marshaled onto the UI thread first (mirrors
+    // DeviceViewModel.OnTransferUpdated/TransfersViewModel's RunOnUiThread pattern). There is
+    // a benign race with ShellWindow's own HistoryStore.Add handler on the same event — Refresh
+    // may occasionally run just before the Add is persisted and pick it up on the next terminal
+    // update instead; both handlers eventually converge and HistoryStore.Add is thread-safe.
+    private void OnTransferUpdated(TransferItem item)
+    {
+        if (item.Status is TransferStatus.Complete or TransferStatus.Failed)
+            RunOnUiThread(Refresh);
     }
 
     /// <summary>Re-reads the store and repopulates <see cref="Items"/>, newest first.</summary>

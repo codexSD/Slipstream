@@ -91,6 +91,14 @@ public sealed class SlipstreamPeer : IAsyncDisposable
     /// <summary>Raised whenever discovery must run again — spec §5 network-change handling.</summary>
     public event Action? NetworkChanged;
 
+    /// <summary>
+    /// Test-only trigger for <see cref="NetworkChanged"/>: invokes the exact same event
+    /// subscribers (e.g. <c>PeerHost</c>) observe in production, without depending on the
+    /// OS actually delivering <see cref="NetworkChange.NetworkAddressChanged"/> (which is
+    /// not something a test can raise deterministically on demand).
+    /// </summary>
+    public void RaiseNetworkChanged() => NetworkChanged?.Invoke();
+
     /// <summary>Starts the listener and the multicast query responder.</summary>
     public Task StartAsync(CancellationToken cancellationToken)
     {

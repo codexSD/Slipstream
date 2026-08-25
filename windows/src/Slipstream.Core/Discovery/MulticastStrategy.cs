@@ -37,6 +37,7 @@ public sealed class MulticastStrategy : IDiscoveryStrategy, IAsyncDisposable
     private readonly object _subscriberLock = new();
     private readonly List<Channel<(PeerAnnouncement Announcement, IPEndPoint RemoteEndPoint)>> _subscribers = new();
     private Task? _receiveLoopTask;
+    private bool _disposed;
 
     public MulticastStrategy(
         DeviceIdentity identity,
@@ -305,6 +306,12 @@ public sealed class MulticastStrategy : IDiscoveryStrategy, IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        // Idempotent: a SlipstreamPeer may legitimately be disposed by more than one
+        // owner (e.g. a PeerHost that took over its lifetime, and a test rig that also
+        // holds a reference) — the second call must be a no-op, not a crash.
+        if (_disposed) return;
+        _disposed = true;
+
         await _loopCts.CancelAsync();
         _listener.Dispose();
 

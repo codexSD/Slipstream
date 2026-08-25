@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<Page
+    x:Class="Slipstream_App.Pages.DevicePage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:local="using:Slipstream.App.Pages"
+    xmlns:meridian="using:Slipstream.Meridian.Controls"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d">
+
+    <ScrollViewer VerticalScrollBarVisibility="Auto">
+        <StackPanel Spacing="20">
+
+            <!-- Spec §12: 3-up stat card row (link rate, transferred today, peer state). -->
+            <Grid ColumnSpacing="16">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+
+                <meridian:MeridianStatCard Grid.Column="0"
+                                            Label="Link rate"
+                                            Value="{x:Bind ViewModel.LinkRateText, Mode=OneWay}" />
+                <meridian:MeridianStatCard Grid.Column="1"
+                                            Label="Transferred today"
+                                            Value="{x:Bind ViewModel.TransferredTodayText, Mode=OneWay}" />
+                <meridian:MeridianStatCard Grid.Column="2"
+                                            Label="Peer"
+                                            Value="{x:Bind ViewModel.PeerStateText, Mode=OneWay}" />
+            </Grid>
+
+            <!-- The screen's one hero metric (spec: "one per screen") — the live transfer rate. -->
+            <meridian:MeridianCard>
+                <StackPanel Padding="20" Spacing="4">
+                    <TextBlock Text="Live rate"
+                               Style="{StaticResource MeridianLabelStyle}"
+                               Foreground="{ThemeResource MeridianInkMutedBrush}" />
+                    <meridian:MeridianHeroMetric Value="{x:Bind ViewModel.HeroRateText, Mode=OneWay}" />
+                </StackPanel>
+            </meridian:MeridianCard>
+
+            <!-- Connection panel: names the winning discovery strategy and elapsed time, so
+                 "why did it take that long" is answerable (spec §5's S1-S4 strategy ladder). -->
+            <meridian:MeridianCard>
+                <StackPanel Padding="20" Spacing="12">
+                    <TextBlock Text="Discovery"
+                               Style="{StaticResource MeridianItemTitleStyle}" />
+                    <TextBlock Text="{x:Bind ViewModel.DiscoverySummaryText, Mode=OneWay}"
+                               Style="{StaticResource MeridianBodyStyle}"
+                               Foreground="{ThemeResource MeridianInkMutedBrush}" />
+
+                    <ItemsControl ItemsSource="{x:Bind ViewModel.DiscoveryStrategies, Mode=OneWay}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate x:DataType="local:DiscoveryStrategyRow">
+                                <Grid Padding="0,6" ColumnSpacing="10">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+
+                                    <TextBlock Grid.Column="0"
+                                               Text="{x:Bind Code}"
+                                               Style="{StaticResource MeridianLabelBoldStyle}"
+                                               Width="28" />
+                                    <TextBlock Grid.Column="1"
+                                               Text="{x:Bind Name}"
+                                               Style="{StaticResource MeridianBodyStyle}" />
+                                    <meridian:MeridianStatusPill Grid.Column="2"
+                                                                  Visibility="{x:Bind IsWinner}"
+                                                                  Status="Positive"
+                                                                  Label="Winner" />
+                                </Grid>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </StackPanel>
+            </meridian:MeridianCard>
+
+        </StackPanel>
+    </ScrollViewer>
+</Page>

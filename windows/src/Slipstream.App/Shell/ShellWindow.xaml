@@ -1,0 +1,172 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<Window
+    x:Class="Slipstream_App.Shell.ShellWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:local="using:Slipstream.App.Shell"
+    xmlns:meridian="using:Slipstream.Meridian.Controls"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    Title="Slipstream"
+    mc:Ignorable="d">
+    <Window.SystemBackdrop>
+        <MicaBackdrop />
+    </Window.SystemBackdrop>
+
+    <Grid x:Name="RootGrid" Background="{ThemeResource MeridianCanvasBrush}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <TitleBar x:Name="AppTitleBar" Grid.Row="0" Title="Slipstream">
+            <TitleBar.IconSource>
+                <ImageIconSource ImageSource="/Assets/AppIcon.ico" />
+            </TitleBar.IconSource>
+        </TitleBar>
+
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="260" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <!-- Sidebar: navigation destinations only. No search box, no bottom user chip. -->
+            <Border Grid.Column="0"
+                    Background="{ThemeResource MeridianSurfaceBrush}"
+                    BorderBrush="{ThemeResource MeridianInkMutedBrush}"
+                    BorderThickness="0,0,1,0">
+                <ListView x:Name="NavList"
+                          ItemsSource="{x:Bind ViewModel.Destinations}"
+                          SelectedItem="{x:Bind ViewModel.Selected, Mode=TwoWay}"
+                          SelectionMode="Single"
+                          Padding="12,16,12,0"
+                          SelectionChanged="NavList_SelectionChanged">
+                    <ListView.Resources>
+                        <!--
+                            Active leaf is a filled Brand pill (spec §12): override the
+                            themed selection brushes ListViewItem's default template reads,
+                            scoped to this list only, rather than touching the app theme.
+                            These MUST live inside ThemeDictionaries (mirroring App.xaml) —
+                            a plain ResourceDictionary entry resolves {StaticResource} once at
+                            parse time and would not follow a live theme switch.
+                        -->
+                        <ResourceDictionary>
+                            <ResourceDictionary.ThemeDictionaries>
+                                <ResourceDictionary x:Key="Light">
+                                    <StaticResource x:Key="ListViewItemBackgroundSelected" ResourceKey="MeridianBrandBrush" />
+                                    <StaticResource x:Key="ListViewItemBackgroundSelectedPointerOver" ResourceKey="MeridianBrandBrush" />
+                                    <StaticResource x:Key="ListViewItemBackgroundSelectedPressed" ResourceKey="MeridianBrandStrongBrush" />
+                                    <StaticResource x:Key="ListViewItemForegroundSelected" ResourceKey="MeridianOnBrandBrush" />
+                                </ResourceDictionary>
+                                <ResourceDictionary x:Key="Dark">
+                                    <StaticResource x:Key="ListViewItemBackgroundSelected" ResourceKey="MeridianBrandBrush" />
+                                    <StaticResource x:Key="ListViewItemBackgroundSelectedPointerOver" ResourceKey="MeridianBrandBrush" />
+                                    <StaticResource x:Key="ListViewItemBackgroundSelectedPressed" ResourceKey="MeridianBrandStrongBrush" />
+                                    <StaticResource x:Key="ListViewItemForegroundSelected" ResourceKey="MeridianOnBrandBrush" />
+                                </ResourceDictionary>
+                            </ResourceDictionary.ThemeDictionaries>
+                        </ResourceDictionary>
+                    </ListView.Resources>
+                    <ListView.ItemTemplate>
+                        <DataTemplate x:DataType="local:ShellDestination">
+                            <Grid Padding="12,10">
+                                <TextBlock Text="{x:Bind Label}"
+                                           Style="{StaticResource MeridianBodyStyle}" />
+                            </Grid>
+                        </DataTemplate>
+                    </ListView.ItemTemplate>
+                    <ListView.ItemContainerStyle>
+                        <Style TargetType="ListViewItem">
+                            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                            <Setter Property="Foreground" Value="{ThemeResource MeridianInkMutedBrush}" />
+                            <Setter Property="Padding" Value="0" />
+                            <Setter Property="Margin" Value="0,2" />
+                            <Setter Property="MinHeight" Value="44" />
+                            <Setter Property="CornerRadius" Value="18" />
+                        </Style>
+                    </ListView.ItemContainerStyle>
+                </ListView>
+            </Border>
+
+            <!-- Content column: top bar + page content. No search box in the top bar. -->
+            <Grid Grid.Column="1">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+
+                <Grid Grid.Row="0" Padding="28,20,28,16">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+
+                    <StackPanel Grid.Column="0" Orientation="Vertical" Spacing="2">
+                        <TextBlock Text="{x:Bind ViewModel.Selected.Label, Mode=OneWay}"
+                                   Style="{StaticResource MeridianScreenTitleStyle}" />
+                        <TextBlock Text="{x:Bind PageSubtitle, Mode=OneWay}"
+                                   Style="{StaticResource MeridianBodyStyle}"
+                                   Foreground="{ThemeResource MeridianInkMutedBrush}" />
+                    </StackPanel>
+
+                    <meridian:MeridianStatusPill Grid.Column="1"
+                                                  VerticalAlignment="Center"
+                                                  Status="{x:Bind ViewModel.ConnectionStatus, Mode=OneWay}"
+                                                  Label="{x:Bind ViewModel.ConnectionLabel, Mode=OneWay}" />
+                </Grid>
+
+                <ContentControl x:Name="PageHost"
+                                Grid.Row="1"
+                                Content="{x:Bind ViewModel.Selected, Mode=OneWay}"
+                                HorizontalContentAlignment="Stretch"
+                                VerticalContentAlignment="Stretch"
+                                Padding="28,0,28,28">
+                    <ContentControl.ContentTemplateSelector>
+                        <local:DestinationTemplateSelector>
+                            <local:DestinationTemplateSelector.DeviceTemplate>
+                                <DataTemplate>
+                                    <!--
+                                        The Device page (Task 9) needs its IPeerHost injected at
+                                        construction, which a DataTemplate can't do on its own —
+                                        so ShellWindow builds one DevicePage instance up front and
+                                        stashes it in Resources; this ContentPresenter just hosts it.
+                                    -->
+                                    <ContentPresenter Content="{StaticResource DevicePageContent}" />
+                                </DataTemplate>
+                            </local:DestinationTemplateSelector.DeviceTemplate>
+                            <local:DestinationTemplateSelector.BrowsePhoneTemplate>
+                                <DataTemplate>
+                                    <!-- Same pattern as DeviceTemplate: BrowsePage needs its
+                                         IPeerHost injected at construction. -->
+                                    <ContentPresenter Content="{StaticResource BrowsePageContent}" />
+                                </DataTemplate>
+                            </local:DestinationTemplateSelector.BrowsePhoneTemplate>
+                            <local:DestinationTemplateSelector.TransfersTemplate>
+                                <DataTemplate>
+                                    <!-- Same pattern as DeviceTemplate: TransfersPage needs its
+                                         TransferQueue injected at construction. -->
+                                    <ContentPresenter Content="{StaticResource TransfersPageContent}" />
+                                </DataTemplate>
+                            </local:DestinationTemplateSelector.TransfersTemplate>
+                            <local:DestinationTemplateSelector.HistoryTemplate>
+                                <DataTemplate>
+                                    <!-- Same pattern as DeviceTemplate: HistoryPage needs its
+                                         HistoryStore/TransferQueue injected at construction. -->
+                                    <ContentPresenter Content="{StaticResource HistoryPageContent}" />
+                                </DataTemplate>
+                            </local:DestinationTemplateSelector.HistoryTemplate>
+                            <local:DestinationTemplateSelector.SettingsTemplate>
+                                <DataTemplate>
+                                    <!-- Same pattern as DeviceTemplate: SettingsPage needs its
+                                         SettingsStore/IPeerHost injected at construction. -->
+                                    <ContentPresenter Content="{StaticResource SettingsPageContent}" />
+                                </DataTemplate>
+                            </local:DestinationTemplateSelector.SettingsTemplate>
+                        </local:DestinationTemplateSelector>
+                    </ContentControl.ContentTemplateSelector>
+                </ContentControl>
+            </Grid>
+        </Grid>
+    </Grid>
+</Window>

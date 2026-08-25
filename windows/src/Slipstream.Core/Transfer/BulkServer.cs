@@ -17,6 +17,8 @@ public sealed class BulkServer : IAsyncDisposable
 
     private readonly TokenVault _vault;
     private readonly TcpListener _listener;
+    private readonly HashSet<TcpClient> _liveClients = new();
+    private readonly object _liveClientsLock = new();
 
     public BulkServer(TokenVault vault, IPAddress bindAddress, int port)
     {
@@ -46,8 +48,31 @@ public sealed class BulkServer : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Test-only hook: forcibly closes every bulk socket currently open on this server,
+    /// simulating a dropped link mid-transfer (spec §5) the way <c>TwoPeers.BreakControlConnectionAsync</c>
+    /// does for the control channel. Each in-flight <c>PullRangeAsync</c> reader on the client
+    /// side will fail its next read, forcing <c>BulkClient.DownloadAsync</c> — and therefore
+    /// <c>PeerHost</c>'s resume-from-chunk-bitmap path — to actually run.
+    /// </summary>
+    public void BreakActiveConnections()
+    {
+        TcpClient[] clients;
+        lock (_liveClientsLock)
+            clients = _liveClients.ToArray();
+
+        foreach (var client in clients)
+        {
+            try { client.Client.Close(0); } // RST, not a graceful FIN, so pending reads fail fast
+            catch (Exception) { /* best effort */ }
+        }
+    }
+
     private async Task ServeAsync(TcpClient client, CancellationToken cancellationToken)
     {
+        lock (_liveClientsLock)
+            _liveClients.Add(client);
+
         try
         {
             client.NoDelay = true;
@@ -74,6 +99,9 @@ public sealed class BulkServer : IAsyncDisposable
         }
         finally
         {
+            lock (_liveClientsLock)
+                _liveClients.Remove(client);
+
             client.Dispose();
         }
     }

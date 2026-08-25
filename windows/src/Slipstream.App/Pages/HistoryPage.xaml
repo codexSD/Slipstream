@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<Page
+    x:Class="Slipstream_App.Pages.HistoryPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:local="using:Slipstream.App.Pages"
+    xmlns:meridian="using:Slipstream.Meridian.Controls"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d">
+
+    <Grid RowSpacing="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0"
+                   Text="Everything sent and received, newest first."
+                   Style="{StaticResource MeridianBodyStyle}"
+                   Foreground="{ThemeResource MeridianInkMutedBrush}" />
+
+        <!-- Data-table view of persisted transfer history (same MeridianDataGrid pattern as
+             the Transfers page). Reveal/Run-again act on the selected row via the buttons
+             below the grid rather than per-row inline buttons — MeridianDataGrid does not
+             support templated cell content (see its class remarks: cell text is resolved by
+             reflection, not by a cell template). -->
+        <Grid Grid.Row="1" RowSpacing="12">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <meridian:MeridianDataGrid x:Name="DataGrid"
+                                        Grid.Row="0"
+                                        ItemsSource="{x:Bind ViewModel.Items, Mode=OneWay}" />
+
+            <!--
+                MeridianDataGrid does not expose a SelectionChanged event (only a SelectedItem
+                dependency property — see its class remarks), so enable state for these buttons
+                is resolved at click time from DataGrid.SelectedItem rather than kept live via
+                an event handler.
+            -->
+            <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="12">
+                <Button x:Name="RevealButton"
+                        Content="Reveal in folder"
+                        Click="RevealButton_Click" />
+                <Button x:Name="RunAgainButton"
+                        Content="Run again"
+                        Click="RunAgainButton_Click" />
+            </StackPanel>
+        </Grid>
+    </Grid>
+</Page>

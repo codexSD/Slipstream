@@ -142,8 +142,9 @@
                             </local:DestinationTemplateSelector.HistoryTemplate>
                             <local:DestinationTemplateSelector.SettingsTemplate>
                                 <DataTemplate>
-                                    <TextBlock Text="Settings — placeholder, replaced by a later task."
-                                               Style="{StaticResource MeridianBodyStyle}" />
+                                    <!-- Same pattern as DeviceTemplate: SettingsPage needs its
+                                         SettingsStore/IPeerHost injected at construction. -->
+                                    <ContentPresenter Content="{StaticResource SettingsPageContent}" />
                                 </DataTemplate>
                             </local:DestinationTemplateSelector.SettingsTemplate>
                         </local:DestinationTemplateSelector>

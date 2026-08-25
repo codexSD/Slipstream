@@ -44,6 +44,7 @@ public sealed partial class ShellWindow : Window
         // HistoryStore.Add is thread-safe on its own (internally locked), so no UI-thread
         // marshal is needed here — only HistoryViewModel's UI-bound state has to hop threads.
         var historyStore = new HistoryStore();
+        var settingsStore = new SettingsStore();
         transferQueue.ItemUpdated += item =>
         {
             if (item.Status is TransferStatus.Complete or TransferStatus.Failed)
@@ -60,6 +61,7 @@ public sealed partial class ShellWindow : Window
         RootGrid.Resources["BrowsePageContent"] = new Pages.BrowsePage(peerHost);
         RootGrid.Resources["TransfersPageContent"] = new Pages.TransfersPage(transferQueue);
         RootGrid.Resources["HistoryPageContent"] = new Pages.HistoryPage(historyStore, transferQueue);
+        RootGrid.Resources["SettingsPageContent"] = new Pages.SettingsPage(settingsStore, peerHost);
 
         ExtendsContentIntoTitleBar = true;
         SetTitleBar(AppTitleBar);

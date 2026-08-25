@@ -23,7 +23,12 @@ namespace Slipstream_App;
 public partial class App : Application
 {
     private Window? _window;
-    
+
+    /// <summary>The single top-level window, exposed for pages that need an owner HWND for
+    /// WinRT pickers (e.g. SettingsPage's FolderPicker) — unpackaged desktop apps must
+    /// initialize such pickers with an explicit window handle.</summary>
+    public static Window? MainWindowInstance { get; private set; }
+
     /// <summary>
     /// Initializes the singleton application object.  This is the first line of authored code
     /// executed, and as such is the logical equivalent of main() or WinMain().
@@ -41,6 +46,7 @@ public partial class App : Application
     {
         // TODO(Task 8): replace NoOpPeerHost with the real PeerHost implementation.
         _window = new Slipstream_App.Shell.ShellWindow(new AppShell.NoOpPeerHost());
+        MainWindowInstance = _window;
         _window.Activate();
     }
 }

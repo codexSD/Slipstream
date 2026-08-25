@@ -269,7 +269,7 @@ public sealed class PeerHost : IPeerHost, IAsyncDisposable
         return (transferId, token, streams, part, endpoint);
     }
 
-    private async Task<(Guid TransferId, Guid Token, int Streams)> RequestFreshTokenAsync(string remotePath, CancellationToken ct)
+    private async Task<(Guid TransferId, Guid Token, int Streams, IPEndPoint Endpoint)> RequestFreshTokenAsync(string remotePath, CancellationToken ct)
     {
         var reply = await SendRequestAsync("pull.request", new PullRequest(remotePath), ct);
 
@@ -279,7 +279,15 @@ public sealed class PeerHost : IPeerHost, IAsyncDisposable
         var response = reply.PayloadAs<PullResponse>()
             ?? throw new ControlProtocolException("The peer sent a malformed transfer response.");
 
-        return (Guid.Parse(response.TransferId), Guid.Parse(response.Token), Math.Min(_peer.StreamCount, response.Streams));
+        // Captured in the same breath as the successful reply (same gated round trip as
+        // RequestTransferAsync), not from a separately-captured WaitForConnectionAsync
+        // result: _connection can be swapped out by a reconnect between those two points,
+        // which would otherwise send the resumed bulk transfer to a stale/mismatched
+        // endpoint while the fresh token was minted against a different connection.
+        var connection = _connection ?? throw new InvalidOperationException("Not connected.");
+        var endpoint = new IPEndPoint(connection.RemoteEndPoint.Address, SlipstreamPorts.Bulk);
+
+        return (Guid.Parse(response.TransferId), Guid.Parse(response.Token), Math.Min(_peer.StreamCount, response.Streams), endpoint);
     }
 
     private async Task ResumeAfterDisconnectAsync(
@@ -293,9 +301,8 @@ public sealed class PeerHost : IPeerHost, IAsyncDisposable
 
             try
             {
-                var connection = await WaitForConnectionAsync(ct);
-                var resumeEndpoint = new IPEndPoint(connection.RemoteEndPoint.Address, SlipstreamPorts.Bulk);
-                var (retryTransferId, retryToken, retryStreams) = await RequestFreshTokenAsync(remotePath, ct);
+                await WaitForConnectionAsync(ct);
+                var (retryTransferId, retryToken, retryStreams, resumeEndpoint) = await RequestFreshTokenAsync(remotePath, ct);
                 await bulk.DownloadAsync(resumeEndpoint, retryTransferId, retryToken, part, retryStreams, progress, ct);
                 return;
             }

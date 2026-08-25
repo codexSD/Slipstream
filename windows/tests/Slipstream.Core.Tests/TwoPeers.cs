@@ -99,6 +99,26 @@ public sealed class TwoPeers : IAsyncDisposable
     }
 
     /// <summary>
+    /// Forcibly closes every bulk socket the server currently has open, mid-transfer.
+    /// Unlike <see cref="BreakControlConnectionAsync"/>, this hits the byte-transfer
+    /// channel itself, so an in-flight <c>BulkClient.DownloadAsync</c> genuinely fails and
+    /// <c>PeerHost</c>'s resume-from-chunk-bitmap path (<c>ResumeAfterDisconnectAsync</c>)
+    /// is forced to run, rather than the bulk transfer simply completing independently
+    /// while only the control channel reconnects in the background.
+    /// </summary>
+    public void BreakBulkConnection() => Server.BulkServer.BreakActiveConnections();
+
+    /// <summary>
+    /// Severs both the control and bulk channels at once, simulating a full network
+    /// change (spec §5) that drops every live socket, not just one of them.
+    /// </summary>
+    public async Task BreakAllConnectionsAsync()
+    {
+        BreakBulkConnection();
+        await BreakControlConnectionAsync();
+    }
+
+    /// <summary>
     /// Writes the S1 discovery cache file directly, in the format <c>EndpointCache</c> reads
     /// at construction, keyed by whatever network this machine's real <see cref="NetworkInfo"/>
     /// reports. If no active non-loopback adapter is present, discovery will find nothing —

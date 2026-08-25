@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Runtime.Versioning;
 using Slipstream.App.Services;
 using Slipstream.Core.Tests;
+using Slipstream.Core.Transfer;
 
 namespace Slipstream.App.Tests;
 
@@ -140,14 +141,37 @@ public class PeerHostTests : IAsyncLifetime
         await using var host = new PeerHost(rig.Client, _downloads);
         await host.StartAsync(_cts.Token);
 
-        var transfer = host.PullAsync(largeFile, null, _cts.Token);
+        long bytesBeforeBreak = 0;
+        var progress = new Progress<TransferProgress>(p => Interlocked.Exchange(ref bytesBeforeBreak, p.BytesCompleted));
 
-        await rig.BreakControlConnectionAsync();
+        var transfer = host.PullAsync(largeFile, progress, _cts.Token);
+
+        // Wait until some bytes have genuinely landed before severing anything, so the
+        // break happens mid-transfer rather than possibly before the bulk socket even
+        // opens — otherwise resume wouldn't be necessary, only possible.
+        await WaitUntil(() => Interlocked.Read(ref bytesBeforeBreak) > 0, TimeSpan.FromSeconds(20));
+        var progressBeforeBreak = Interlocked.Read(ref bytesBeforeBreak);
+
+        // Break BOTH the control and bulk channels: breaking only the control connection
+        // (as BreakControlConnectionAsync alone would) leaves the in-flight bulk download
+        // running on its own already-open socket, so it can simply complete independently
+        // while control reconnects in the background — never forcing PeerHost's
+        // resume-from-chunk-bitmap path (ResumeAfterDisconnectAsync) to actually run.
+        // Severing the bulk socket too makes the in-flight BulkClient.DownloadAsync fail
+        // for real, so resume is genuinely required, not just possible.
+        await rig.BreakAllConnectionsAsync();
         rig.Client.RaiseNetworkChanged(); // what NetworkChange delivers in production
 
         var local = await transfer;
 
         Assert.Equal(payload, await File.ReadAllBytesAsync(local, _cts.Token));
         Assert.Equal(PeerConnectionState.Connected, host.State);
+
+        // Evidence that resume was actually necessary: real progress had already been made
+        // (bytes downloaded into the part file's chunk bitmap) at the moment the link was
+        // severed, and the file still completes byte-identical afterwards — proving the
+        // resume-from-bitmap path, not a lucky independent completion, finished the transfer.
+        Assert.True(progressBeforeBreak > 0, "Expected some bytes to have been downloaded before the break.");
+        Assert.True(progressBeforeBreak < payload.Length, "Expected the transfer to still be in flight when broken.");
     }
 }

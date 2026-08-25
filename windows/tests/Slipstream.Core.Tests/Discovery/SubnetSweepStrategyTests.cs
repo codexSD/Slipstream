@@ -29,7 +29,7 @@ public class SubnetSweepStrategyTests
         var strategy = new SubnetSweepStrategy(probe.Probe);
 
         Assert.Null(await strategy.FindAsync(Network(), CancellationToken.None));
-        Assert.Equal(254, probe.Attempts.Count);
+        Assert.Equal(253, probe.Attempts.Count);
     }
 
     [Fact]
@@ -53,7 +53,7 @@ public class SubnetSweepStrategyTests
         stopwatch.Stop();
 
         Assert.NotNull(found);
-        // Serial would be 254 * 50ms = 12.7s. Concurrent should finish in well under 2s.
+        // Serial would be 253 * 50ms = 12.65s. Concurrent should finish in well under 2s.
         Assert.True(stopwatch.ElapsedMilliseconds < 2000,
             $"Sweep took {stopwatch.ElapsedMilliseconds}ms — probes are not running concurrently.");
     }

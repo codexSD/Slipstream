@@ -15,6 +15,7 @@ public sealed class SubnetSweepStrategy(PeerProbe probe, int maxConcurrency = 25
     {
         var hosts = SubnetMath
             .EnumerateHosts(network.LocalAddress, network.PrefixLength)
+            .Where(host => !host.Equals(network.LocalAddress))
             .ToList();
 
         if (hosts.Count == 0) return null;

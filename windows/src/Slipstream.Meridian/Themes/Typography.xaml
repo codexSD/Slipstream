@@ -42,4 +42,15 @@
     <Style x:Key="MeridianLabelBoldStyle" TargetType="TextBlock" BasedOn="{StaticResource MeridianLabelStyle}">
         <Setter Property="FontWeight" Value="Bold" />
     </Style>
+
+    <!--
+      MeridianStatCard's value text: smaller than the one-per-screen hero metric, but the
+      same tabular-numerals contract, since it is also a number that updates in place.
+    -->
+    <Style x:Key="MeridianStatValueStyle" TargetType="TextBlock">
+        <Setter Property="FontSize" Value="24" />
+        <Setter Property="FontWeight" Value="Bold" />
+        <Setter Property="Foreground" Value="{ThemeResource MeridianInkBrush}" />
+        <Setter Property="Typography.NumeralAlignment" Value="Tabular" />
+    </Style>
 </ResourceDictionary>

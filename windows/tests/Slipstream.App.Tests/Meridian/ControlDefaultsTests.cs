@@ -38,6 +38,7 @@ public class ControlDefaultsTests
     [Theory]
     [InlineData("MeridianCard", "MeridianRadiusLg")]
     [InlineData("MeridianIconTile", "MeridianRadiusSm")]
+    [InlineData("MeridianStatCard", "MeridianRadiusLg")]
     public void Surface_control_default_style_has_stroke_and_surface_fill(string controlName, string expectedRadiusKey)
     {
         var styles = ExtractStylesByTargetType(LoadGeneric());
@@ -52,13 +53,45 @@ public class ControlDefaultsTests
         Assert.Equal("{ThemeResource MeridianStrokeBrush}", setters["BorderBrush"]);
 
         Assert.True(setters.ContainsKey("Background"), $"{controlName} missing Background setter");
-        Assert.Equal(controlName == "MeridianCard"
-                ? "{ThemeResource MeridianSurfaceBrush}"
-                : "{ThemeResource MeridianTintBrush}",
+        Assert.Equal(controlName == "MeridianIconTile"
+                ? "{ThemeResource MeridianTintBrush}"
+                : "{ThemeResource MeridianSurfaceBrush}",
             setters["Background"]);
 
         Assert.True(setters.ContainsKey("CornerRadius"), $"{controlName} missing CornerRadius setter");
         Assert.Equal($"{{StaticResource {expectedRadiusKey}}}", setters["CornerRadius"]);
+    }
+
+    [Fact]
+    public void MeridianStatCard_value_text_uses_the_tabular_stat_value_style()
+    {
+        var doc = LoadGeneric();
+        var statCardStyle = doc.Descendants()
+            .Where(e => e.Name.LocalName == "Style")
+            .FirstOrDefault(e => (e.Attribute("TargetType")?.Value ?? "").EndsWith("MeridianStatCard"));
+        Assert.True(statCardStyle is not null, "No default Style with TargetType MeridianStatCard found in Generic.xaml");
+
+        var usesStatValueStyle = statCardStyle!.Descendants()
+            .Where(e => e.Name.LocalName == "TextBlock")
+            .Any(e => (e.Attribute("Style")?.Value ?? "").Contains("MeridianStatValueStyle"));
+        Assert.True(usesStatValueStyle,
+            "MeridianStatCard's value TextBlock must use a tabular-numeral style (MeridianStatValueStyle).");
+    }
+
+    [Fact]
+    public void MeridianHeroMetric_uses_the_hero_metric_style()
+    {
+        var doc = LoadGeneric();
+        var heroStyle = doc.Descendants()
+            .Where(e => e.Name.LocalName == "Style")
+            .FirstOrDefault(e => (e.Attribute("TargetType")?.Value ?? "").EndsWith("MeridianHeroMetric"));
+        Assert.True(heroStyle is not null, "No default Style with TargetType MeridianHeroMetric found in Generic.xaml");
+
+        var usesHeroMetricStyle = heroStyle!.Descendants()
+            .Where(e => e.Name.LocalName == "TextBlock")
+            .Any(e => (e.Attribute("Style")?.Value ?? "").Contains("MeridianHeroMetricStyle"));
+        Assert.True(usesHeroMetricStyle,
+            "MeridianHeroMetric's value TextBlock must use MeridianHeroMetricStyle (40sp/Bold/Tabular/Brand).");
     }
 
     [Fact]

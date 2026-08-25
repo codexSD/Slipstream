@@ -8,6 +8,7 @@
     </ResourceDictionary.MergedDictionaries>
 
     <local:BoolToVisibilityConverter x:Key="BoolToVisibilityConverter" />
+    <local:StatusBrushKeyToBrushConverter x:Key="StatusBrushKeyToBrushConverter" />
 
     <!--
       MeridianCard: Surface fill, lg radius, 1px stroke, no elevation. No content padding
@@ -104,6 +105,162 @@
                                        TextAlignment="Center" />
                         </StackPanel>
                     </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!--
+      MeridianStatusPill: colour is never the only cue. A small signal-coloured dot AND the
+      text Label are always both present; the dot's fill and the text's foreground both come
+      from BrushKeyFor(Status) via StatusBrushKeyToBrushConverter.
+    -->
+    <Style TargetType="local:MeridianStatusPill">
+        <Setter Property="HorizontalAlignment" Value="Left" />
+        <Setter Property="Padding" Value="{StaticResource MeridianSpacingSm}" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="local:MeridianStatusPill">
+                    <Border Background="{ThemeResource MeridianTintBrush}"
+                            CornerRadius="{StaticResource MeridianRadiusPill}"
+                            Padding="{TemplateBinding Padding}">
+                        <StackPanel Orientation="Horizontal"
+                                    Spacing="{StaticResource MeridianSpacingXs}"
+                                    VerticalAlignment="Center">
+                            <Ellipse Width="8" Height="8" VerticalAlignment="Center"
+                                     Fill="{Binding BrushKey, RelativeSource={RelativeSource TemplatedParent}, Converter={StaticResource StatusBrushKeyToBrushConverter}}" />
+                            <TextBlock Text="{TemplateBinding Label}"
+                                       Style="{StaticResource MeridianLabelBoldStyle}"
+                                       Foreground="{Binding BrushKey, RelativeSource={RelativeSource TemplatedParent}, Converter={StaticResource StatusBrushKeyToBrushConverter}}" />
+                        </StackPanel>
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!--
+      MeridianStateView: Loading / Content / Empty / Error, switched via VisualStateManager —
+      the same four-state contract as the Compose implementation. Error message text is
+      re-coloured to MeridianCriticalBrush by the Error VisualState's Setter; everything else
+      about the message panel (layout, action button) is shared with Empty so the two states
+      stay visually related.
+    -->
+    <Style TargetType="local:MeridianStateView">
+        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+        <Setter Property="VerticalContentAlignment" Value="Stretch" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="local:MeridianStateView">
+                    <Grid>
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualState x:Name="Loading">
+                                    <VisualState.Setters>
+                                        <Setter Target="LoadingIndicator.Visibility" Value="Visible" />
+                                        <Setter Target="ContentHost.Visibility" Value="Collapsed" />
+                                        <Setter Target="MessagePanel.Visibility" Value="Collapsed" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                                <VisualState x:Name="Content">
+                                    <VisualState.Setters>
+                                        <Setter Target="LoadingIndicator.Visibility" Value="Collapsed" />
+                                        <Setter Target="ContentHost.Visibility" Value="Visible" />
+                                        <Setter Target="MessagePanel.Visibility" Value="Collapsed" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                                <VisualState x:Name="Empty">
+                                    <VisualState.Setters>
+                                        <Setter Target="LoadingIndicator.Visibility" Value="Collapsed" />
+                                        <Setter Target="ContentHost.Visibility" Value="Collapsed" />
+                                        <Setter Target="MessagePanel.Visibility" Value="Visible" />
+                                        <Setter Target="MessageText.Foreground" Value="{ThemeResource MeridianInkMutedBrush}" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                                <VisualState x:Name="Error">
+                                    <VisualState.Setters>
+                                        <Setter Target="LoadingIndicator.Visibility" Value="Collapsed" />
+                                        <Setter Target="ContentHost.Visibility" Value="Collapsed" />
+                                        <Setter Target="MessagePanel.Visibility" Value="Visible" />
+                                        <Setter Target="MessageText.Foreground" Value="{ThemeResource MeridianCriticalBrush}" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+
+                        <ProgressRing x:Name="LoadingIndicator"
+                                      IsActive="True"
+                                      Visibility="Collapsed"
+                                      HorizontalAlignment="Center"
+                                      VerticalAlignment="Center" />
+
+                        <ContentPresenter x:Name="ContentHost"
+                                           Content="{TemplateBinding Content}"
+                                           ContentTemplate="{TemplateBinding ContentTemplate}"
+                                           Visibility="Collapsed"
+                                           HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                           VerticalAlignment="{TemplateBinding VerticalContentAlignment}" />
+
+                        <StackPanel x:Name="MessagePanel"
+                                    Visibility="Collapsed"
+                                    Spacing="{StaticResource MeridianSpacingMd}"
+                                    HorizontalAlignment="Center"
+                                    VerticalAlignment="Center"
+                                    MaxWidth="320">
+                            <TextBlock x:Name="MessageText"
+                                       Text="{TemplateBinding Message}"
+                                       Style="{StaticResource MeridianBodyStyle}"
+                                       TextAlignment="Center"
+                                       TextWrapping="Wrap" />
+                            <Button Content="{TemplateBinding ActionLabel}"
+                                    Command="{TemplateBinding ActionCommand}"
+                                    HorizontalAlignment="Center" />
+                        </StackPanel>
+                    </Grid>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!--
+      MeridianStatCard: a small muted label above a large bold tabular number, on the same
+      Surface/Stroke/lg-radius visual language as MeridianCard.
+    -->
+    <Style TargetType="local:MeridianStatCard">
+        <Setter Property="Background" Value="{ThemeResource MeridianSurfaceBrush}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource MeridianStrokeBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="CornerRadius" Value="{StaticResource MeridianRadiusLg}" />
+        <Setter Property="Padding" Value="{StaticResource MeridianSpacingLg}" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="local:MeridianStatCard">
+                    <Border Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="{TemplateBinding CornerRadius}"
+                            Padding="{TemplateBinding Padding}">
+                        <StackPanel Spacing="{StaticResource MeridianSpacingXs}">
+                            <TextBlock Text="{TemplateBinding Label}" Style="{StaticResource MeridianLabelStyle}" />
+                            <TextBlock Text="{TemplateBinding Value}" Style="{StaticResource MeridianStatValueStyle}" />
+                        </StackPanel>
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!--
+      MeridianHeroMetric: the one-per-screen 40sp/Bold/Tabular/Brand number, e.g. the live
+      transfer rate. Just a thin Control wrapper over MeridianHeroMetricStyle so callers bind
+      a single pre-formatted Value string.
+    -->
+    <Style TargetType="local:MeridianHeroMetric">
+        <Setter Property="HorizontalAlignment" Value="Left" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="local:MeridianHeroMetric">
+                    <TextBlock Text="{TemplateBinding Value}" Style="{StaticResource MeridianHeroMetricStyle}" />
                 </ControlTemplate>
             </Setter.Value>
         </Setter>

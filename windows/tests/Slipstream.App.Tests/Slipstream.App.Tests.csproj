@@ -21,6 +21,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\Slipstream.App\Slipstream.App.csproj" />
     <ProjectReference Include="..\..\src\Slipstream.Core\Slipstream.Core.csproj" />
+    <ProjectReference Include="..\..\src\Slipstream.Meridian\Slipstream.Meridian.csproj" />
   </ItemGroup>
 
 </Project>

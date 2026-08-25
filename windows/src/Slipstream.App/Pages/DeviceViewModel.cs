@@ -12,13 +12,14 @@ public sealed record DiscoveryStrategyRow(string Code, string Name, bool IsWinne
 /// strategy and how long it took.
 /// </summary>
 /// <remarks>
-/// <see cref="LinkRateText"/>, <see cref="TransferredTodayText"/>, and
-/// <see cref="HeroRateText"/> show the resting placeholder "—" rather than a fabricated
-/// number: <see cref="IPeerHost"/> does not expose a live per-transfer byte rate today (that
-/// arrives with Task 12's TransferQueue, which observes <c>TransferProgress</c> from an
-/// in-flight pull) or a per-day-transferred-bytes aggregate (no history/stats store exists
-/// yet). This is a deliberate, documented gap for the controller to sanity-check — wiring a
-/// real rate in here once TransferQueue exists is a follow-up, not a workaround.
+/// <see cref="HeroRateText"/> now reflects the live aggregate rate of whatever
+/// <see cref="TransferQueue"/> is currently running (Task 12), when one is supplied — summed
+/// across every <see cref="TransferQueue.Active"/> item and refreshed on each
+/// <see cref="TransferQueue.ItemUpdated"/>. When no queue is supplied (or nothing is running)
+/// it falls back to "—". <see cref="LinkRateText"/> and <see cref="TransferredTodayText"/>
+/// still show the resting placeholder "—": no per-day-transferred-bytes aggregate exists yet
+/// (no history/stats store), and link rate is a different, still-unavailable measurement (the
+/// negotiated/PHY rate, not a transfer's observed throughput). Those remain a documented gap.
 /// </remarks>
 public sealed partial class DeviceViewModel : ObservableObject
 {
@@ -40,6 +41,7 @@ public sealed partial class DeviceViewModel : ObservableObject
         };
 
     private readonly IPeerHost _peerHost;
+    private readonly TransferQueue? _transferQueue;
 
     private string _linkRateText = "—";
     private string _transferredTodayText = "—";
@@ -90,19 +92,35 @@ public sealed partial class DeviceViewModel : ObservableObject
         set => SetProperty(ref _discoverySummaryText, value);
     }
 
-    public DeviceViewModel(IPeerHost peerHost)
+    public DeviceViewModel(IPeerHost peerHost, TransferQueue? transferQueue = null)
     {
         ArgumentNullException.ThrowIfNull(peerHost);
         _peerHost = peerHost;
+        _transferQueue = transferQueue;
 
         _discoveryStrategies = BuildStrategyRows();
         Refresh(peerHost.State, peerHost.PeerName);
 
         peerHost.StateChanged += OnPeerStateChanged;
+        if (_transferQueue is not null)
+            _transferQueue.ItemUpdated += OnTransferUpdated;
     }
 
     private void OnPeerStateChanged(PeerConnectionState state, string? peerName, string? band)
         => Refresh(state, peerName);
+
+    private void OnTransferUpdated(TransferItem item) => RefreshHeroRate();
+
+    /// <summary>Sums <see cref="BytesPerSecond"/> across every currently-running transfer.
+    /// Not marshaled to the UI thread — see the class remarks on TransferQueue.ItemUpdated;
+    /// this mirrors the same not-yet-dispatched gap as <see cref="OnPeerStateChanged"/>.</summary>
+    private void RefreshHeroRate()
+    {
+        if (_transferQueue is null) return;
+
+        var totalRate = _transferQueue.Active.Sum(t => t.BytesPerSecond);
+        HeroRateText = totalRate > 0 ? TransferItem.FormatRate(totalRate) : "—";
+    }
 
     private void Refresh(PeerConnectionState state, string? peerName)
     {
@@ -123,7 +141,7 @@ public sealed partial class DeviceViewModel : ObservableObject
         // resting placeholder regardless of connection state.
         LinkRateText = "—";
         TransferredTodayText = "—";
-        HeroRateText = "—";
+        RefreshHeroRate();
     }
 
     private IReadOnlyList<DiscoveryStrategyRow> BuildStrategyRows()

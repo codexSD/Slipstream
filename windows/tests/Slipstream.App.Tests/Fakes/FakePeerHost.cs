@@ -35,6 +35,10 @@ public sealed class FakePeerHost : IPeerHost
     /// <summary>When set, <see cref="ListAsync"/> throws this instead of returning a result.</summary>
     public Exception? ListFailure { get; set; }
 
+    /// <summary>When set, <see cref="PullAsync"/> throws for a pull whose remotePath equals this
+    /// value, so tests can simulate one transfer in a batch failing without the rest failing too.</summary>
+    public string? FailFor { get; set; }
+
     public void RaiseState(PeerConnectionState state, string? peerName, string? band = null)
     {
         State = state;
@@ -60,7 +64,9 @@ public sealed class FakePeerHost : IPeerHost
             : Task.FromResult(ListResultFactory(path));
 
     public Task<string> PullAsync(string remotePath, IProgress<TransferProgress>? progress, CancellationToken ct)
-        => Task.FromResult(string.Empty);
+        => remotePath == FailFor
+            ? Task.FromException<string>(new InvalidOperationException($"Simulated failure for {remotePath}"))
+            : Task.FromResult(string.Empty);
 
     public Task StreamAsync(string remotePath, CancellationToken ct) => Task.CompletedTask;
 

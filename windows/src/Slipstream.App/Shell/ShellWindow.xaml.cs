@@ -31,11 +31,17 @@ public sealed partial class ShellWindow : Window
 
         InitializeComponent();
 
+        // One TransferQueue for the whole session, shared between the Transfers page (which
+        // drives it) and the Device page (which reads its Active/ItemUpdated to show a live
+        // hero rate) — see DevicePage/DeviceViewModel's TransferQueue remarks.
+        var transferQueue = new TransferQueue(peerHost, maxConcurrent: 2);
+
         // See the DeviceTemplate's ContentPresenter comment: a DataTemplate can't take
         // constructor arguments, so the one DevicePage instance is built here (where the
         // injected peerHost is in scope) and hosted by name from the resource dictionary.
-        RootGrid.Resources["DevicePageContent"] = new Pages.DevicePage(peerHost);
+        RootGrid.Resources["DevicePageContent"] = new Pages.DevicePage(peerHost, transferQueue);
         RootGrid.Resources["BrowsePageContent"] = new Pages.BrowsePage(peerHost);
+        RootGrid.Resources["TransfersPageContent"] = new Pages.TransfersPage(transferQueue);
 
         ExtendsContentIntoTitleBar = true;
         SetTitleBar(AppTitleBar);

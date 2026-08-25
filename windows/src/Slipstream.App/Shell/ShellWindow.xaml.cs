@@ -36,12 +36,30 @@ public sealed partial class ShellWindow : Window
         // hero rate) — see DevicePage/DeviceViewModel's TransferQueue remarks.
         var transferQueue = new TransferQueue(peerHost, maxConcurrent: 2);
 
+        // One HistoryStore for the whole session (Task 13), backed by the JSON file under
+        // %LOCALAPPDATA%\Slipstream\history.json (HistoryStore.DefaultPath). Every transfer
+        // the queue finishes — success or failure — is recorded, via ItemUpdated firing once
+        // more with a terminal Status when RunAsync's finally block runs. ItemUpdated fires
+        // from whatever background thread ran the transfer (see TransferQueue's remarks);
+        // HistoryStore.Add is thread-safe on its own (internally locked), so no UI-thread
+        // marshal is needed here — only HistoryViewModel's UI-bound state has to hop threads.
+        var historyStore = new HistoryStore();
+        transferQueue.ItemUpdated += item =>
+        {
+            if (item.Status is TransferStatus.Complete or TransferStatus.Failed)
+            {
+                historyStore.Add(new Slipstream.App.Services.HistoryEntry(
+                    item.Path, item.LocalPath ?? item.Path, item.TotalBytes, item.Status, DateTimeOffset.UtcNow));
+            }
+        };
+
         // See the DeviceTemplate's ContentPresenter comment: a DataTemplate can't take
         // constructor arguments, so the one DevicePage instance is built here (where the
         // injected peerHost is in scope) and hosted by name from the resource dictionary.
         RootGrid.Resources["DevicePageContent"] = new Pages.DevicePage(peerHost, transferQueue);
         RootGrid.Resources["BrowsePageContent"] = new Pages.BrowsePage(peerHost);
         RootGrid.Resources["TransfersPageContent"] = new Pages.TransfersPage(transferQueue);
+        RootGrid.Resources["HistoryPageContent"] = new Pages.HistoryPage(historyStore, transferQueue);
 
         ExtendsContentIntoTitleBar = true;
         SetTitleBar(AppTitleBar);

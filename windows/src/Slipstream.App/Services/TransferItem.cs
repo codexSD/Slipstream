@@ -24,6 +24,7 @@ public sealed partial class TransferItem : ObservableObject
     private string _sizeText;
     private string _rateText = "—";
     private string _etaText = "—";
+    private string? _localPath;
 
     public TransferItem(string path, long totalBytes = 0)
     {
@@ -38,6 +39,16 @@ public sealed partial class TransferItem : ObservableObject
 
     /// <summary>File name only, for display.</summary>
     public string Name { get; }
+
+    /// <summary>The local path this transfer was saved to, once <see cref="IPeerHost.PullAsync"/>
+    /// returns it — null until the transfer completes (or if it fails before returning one).
+    /// Recorded so completed transfers can be persisted to <see cref="HistoryStore"/> with
+    /// enough information for "Reveal in folder" to check the right file.</summary>
+    public string? LocalPath
+    {
+        get => _localPath;
+        set => SetProperty(ref _localPath, value);
+    }
 
     public long TotalBytes
     {

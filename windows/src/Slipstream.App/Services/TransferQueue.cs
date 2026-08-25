@@ -79,7 +79,8 @@ public sealed class TransferQueue
                 ItemUpdated?.Invoke(item);
             });
 
-            await _host.PullAsync(item.Path, progress, CancellationToken.None).ConfigureAwait(false);
+            var localPath = await _host.PullAsync(item.Path, progress, CancellationToken.None).ConfigureAwait(false);
+            item.LocalPath = localPath;
             item.Status = TransferStatus.Complete;
         }
         catch

@@ -135,8 +135,9 @@
                             </local:DestinationTemplateSelector.TransfersTemplate>
                             <local:DestinationTemplateSelector.HistoryTemplate>
                                 <DataTemplate>
-                                    <TextBlock Text="History — placeholder, replaced by a later task."
-                                               Style="{StaticResource MeridianBodyStyle}" />
+                                    <!-- Same pattern as DeviceTemplate: HistoryPage needs its
+                                         HistoryStore/TransferQueue injected at construction. -->
+                                    <ContentPresenter Content="{StaticResource HistoryPageContent}" />
                                 </DataTemplate>
                             </local:DestinationTemplateSelector.HistoryTemplate>
                             <local:DestinationTemplateSelector.SettingsTemplate>

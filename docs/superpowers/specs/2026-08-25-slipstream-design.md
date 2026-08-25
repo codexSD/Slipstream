@@ -43,13 +43,13 @@ Two network scenarios drive the design, in order of frequency:
 | Decision | Choice | Rationale |
 |---|---|---|
 | Distribution | Personal, sideloaded APK | Unlocks `MANAGE_EXTERNAL_STORAGE` for full filesystem browsing; avoids Play policy review, which rejects that permission for non-file-manager apps |
-| Android stack | Kotlin + Jetpack Compose + Media3 | Chosen deliberately over reusing VanSale's XML `:meridian-ui` module; requires a Compose port of the design system (§13) |
+| Android stack | Kotlin + Jetpack Compose + Media3 | Modern toolkit, first-class Media3 streaming; requires a Compose implementation of the design system (§13) |
 | Windows stack | C# / .NET 9 + WinUI 3 | Native throughput, modern Fluent shell, straightforward tray + autostart |
 | Trust | Pair once, then fully silent | Permanent cert-fingerprint trust; unpaired devices ignored entirely, so untrusted networks stay safe with no per-transfer friction |
 | PC playback | Hand off to system default player | Fire-and-forget. No embedded player, no remote control, no position sync |
 | Code sharing | None — shared **specification**, two implementations | The protocol is small; a shared native core was judged not worth the JNI cost |
-| Localisation | English only, LTR | Personal tool. VanSale's bilingual/RTL-first requirement does not apply |
-| Dark mode | Both platforms, from day one | Media app used at night; VanSale's light-only web rule does not apply |
+| Localisation | English only, LTR | Personal tool; no bilingual or RTL requirement |
+| Dark mode | Both platforms, from day one | Media app used at night; light and dark ship together |
 
 ---
 
@@ -356,9 +356,9 @@ guarantee verifiable rather than aspirational, and the test suite asserts it (§
 
 ## 12. UI — Meridian adoption
 
-Slipstream adopts **Meridian**, the design system defined in the VanSale repository at
-`VanSalesMain/docs/design-system.md`. That document remains the source of truth for tokens,
-principles, and voice; this section records how Slipstream applies them and where it deviates.
+Slipstream wears **Meridian**, a calm instrument-panel design language. `docs/design-guide.md`
+is its full reference, written during implementation; this section records the tokens, rules, and
+component contracts the app depends on.
 
 ### Why Meridian fits
 
@@ -379,27 +379,23 @@ Meridian's signals with no new tokens invented:
 Info deliberately equalling Brand is correct here for the reason Meridian gives: an in-flight
 item is not an alarm.
 
-Every status carries a **word and an icon**, never color alone — Meridian's accessibility rule,
-and also what makes the state readable at a glance from across a room.
+Every status carries a **word and an icon**, never color alone — the accessibility rule, and also
+what makes the state readable at a glance from across a room.
 
 Meridian's **tabular figures** rule is load-bearing rather than cosmetic in this app: rate, ETA,
 size, and percent all update several times a second, and proportional figures make the readout
 visibly jitter. The **Hero metric** role (40sp, bold, tabular, Brand, one per screen) is the live
 transfer rate.
 
-### Deviations from VanSale, and why
+### Discipline
 
-| Aspect | VanSale | Slipstream | Reason |
-|---|---|---|---|
-| Localisation | Bilingual AR/EN, RTL-first | English only, LTR | Personal tool; removes real ongoing work |
-| Dark mode | Android yes, web light-only | **Both platforms** | Media app used at night |
-| Android toolkit | XML + Material 3 | Compose | Chosen deliberately; requires §13 |
-
-No new color, no second accent, no shadow language. Per Meridian §9, boldness is spent once.
+No new color, no second accent, no shadow language. Boldness is spent once — the single
+memorable move is the calm canvas with one blue, and adding a second accent would spend it
+twice. Before shipping a surface, remove one thing.
 
 ### Android screens
 
-All built from the Meridian §5 kit — no new components invented.
+All built from the shared component kit — no new components invented.
 
 - **Peer / Home** — `Header card` (Brand fill, On-brand title, On-brand-muted subtitle) with
   device name and link state; `Hero metric` showing live rate during a transfer; a row of
@@ -416,12 +412,12 @@ All built from the Meridian §5 kit — no new components invented.
 
 ### Windows screens
 
-The desktop app is structurally Meridian's *admin web*, not its phone, so it takes the dashboard
-half of §5.
+The desktop app is structurally a dashboard, not a phone screen, so it takes the dashboard half
+of the kit.
 
 - **Sidebar shell** — 260px Surface panel on Canvas: Device, Browse phone, Transfers, History,
   Settings. Active leaf is a **filled Brand pill** with On-brand text; inactive is Ink-muted.
-  Per Meridian's explicit rule: no nav search box, no bottom user chip.
+  Per the shell rule: no nav search box, no bottom user chip.
 - **Top bar** — bold page title and muted subtitle inline-start; connection status pill
   inline-end. No search box.
 - **Device** — a 3-up `Stat card` row (link rate, transferred today, peer state): small muted
@@ -437,16 +433,16 @@ half of §5.
 
 ## 13. `meridian-compose` — porting the design system
 
-Because Slipstream uses Compose, VanSale's `:meridian-ui` Gradle module (XML + Material 3 theme
-attributes) cannot be consumed directly. Slipstream builds `:meridian-compose`
-(namespace `com.slipstream.meridian`), structured to mirror `:meridian-ui` role-for-role so the
-two implementations stay reconcilable.
+Meridian's tokens and component contracts are platform-agnostic, but Material 3's theme system
+has no slot for several of its roles. Slipstream implements it as `:meridian-compose`
+(namespace `com.slipstream.meridian`), a standalone Gradle module owning the tokens, the theme,
+and the component set, so the design system is versioned independently of the app.
 
 ### Single token source
 
-`MeridianTokens.kt` holds every hex value from `design-system.md` §2 and nothing else. The lint
-gate (§17) bans `Color(0x…)` literals anywhere outside this file — the Compose equivalent of the
-color-literal check in VanSale's `check-meridian-tokens.sh`.
+`MeridianTokens.kt` holds every hex value in the palette and nothing else. The lint gate (§17)
+bans `Color(0x…)` literals anywhere outside this file, so a color cannot enter the app without
+entering the token table first.
 
 ### Two theming layers, both mandatory
 
@@ -458,10 +454,10 @@ Critical. Therefore:
 2. **A fully-mapped M3 `ColorScheme`** underneath it, so stock Material components are correct
    without per-call-site overrides.
 
-The second layer is not optional. This is VanSale's documented "unmapped role" trap reappearing
-in a new toolkit: leave `surfaceVariant` or any tertiary role unmapped and a stock Compose chip
-renders Material baseline lavender — no crash, no lint warning, just the wrong color, exactly as
-VanSale's filter chip did. **Every role is mapped, in both light and dark, in the same edit.**
+The second layer is not optional, and it is the highest-value trap in this document. Leave
+`surfaceVariant` or any tertiary role unmapped and a stock Compose chip renders Material's
+baseline lavender — no crash, no lint warning, no IDE preview difference, just one control that
+is quietly the wrong color. **Every role is mapped, in both light and dark, in the same edit.**
 
 ### Compose-specific traps, to be encoded in the playbook
 
@@ -473,10 +469,10 @@ VanSale's filter chip did. **Every role is mapped, in both light and dark, in th
 2. **Tabular figures require `fontFeatureSettings = "tnum"`** on the numeric text styles. There is
    no XML attribute to copy across, and the omission is invisible until a live rate readout starts
    jittering.
-3. **The `values-night` trap is replaced, not removed.** Compose has no night-qualified resources,
-   so VanSale's single-night-file rule is moot. Its replacement: `isSystemInDarkTheme()` is read
-   in **exactly one place**, inside `MeridianTheme`. Read anywhere else and screens disagree about
-   which mode they are in.
+3. **Dark mode is a runtime branch, not a resource qualifier.** Compose has no night-qualified
+   resources, so there is no `values-night` directory to get wrong — but the replacement rule
+   still binds: `isSystemInDarkTheme()` is read in **exactly one place**, inside `MeridianTheme`.
+   Read anywhere else and screens disagree about which mode they are in.
 
 ### Components to port
 
@@ -511,7 +507,7 @@ hides to tray rather than exiting. The tray menu offers Show, Pause discovery, a
 
 ## 15. Errors and voice
 
-Following Meridian §7 — direct, no apology, name the next step:
+Following the Meridian voice rules — direct, no apology, name the next step:
 
 | Condition | Message |
 |---|---|
@@ -522,8 +518,7 @@ Following Meridian §7 — direct, no apology, name the next step:
 | Unpaired peer seen | *"Slipstream found a device. Pair it?"* |
 | Storage permission denied | *"Slipstream needs file access to browse this device."* with the action attached |
 
-Empty states invite action per Meridian §7: an empty transfer list says what to do, never
-"No data."
+Empty states invite action: an empty transfer list says what to do next, never "No data."
 
 ---
 
@@ -556,7 +551,7 @@ extracts whatever the radio does provide.
 | **LAN-only assertion** | A test asserting a non-RFC1918 peer address is refused at every entry point |
 | **Resume correctness** | Kill the connection at randomised offsets; assert byte-identical output |
 | **Token lint** | Bans `Color(0x…)` outside `MeridianTokens.kt` (Android) and hardcoded brushes outside the dictionaries (Windows) |
-| **Theme composition** | Every screen composes in forced light and forced dark without throwing — the Compose successor to VanSale's instrumented theme-inflation test |
+| **Theme composition** | Every screen composes in forced light and forced dark without throwing |
 | **Component gallery** | A debug-only screen rendering every token and component against the live theme, plus a `@Preview` per component in both modes |
 
 ---

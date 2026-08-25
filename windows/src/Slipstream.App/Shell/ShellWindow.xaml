@@ -13,7 +13,7 @@
         <MicaBackdrop />
     </Window.SystemBackdrop>
 
-    <Grid Background="{ThemeResource MeridianCanvasBrush}">
+    <Grid x:Name="RootGrid" Background="{ThemeResource MeridianCanvasBrush}">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
@@ -111,8 +111,13 @@
                         <local:DestinationTemplateSelector>
                             <local:DestinationTemplateSelector.DeviceTemplate>
                                 <DataTemplate>
-                                    <TextBlock Text="Device — placeholder, replaced by a later task."
-                                               Style="{StaticResource MeridianBodyStyle}" />
+                                    <!--
+                                        The Device page (Task 9) needs its IPeerHost injected at
+                                        construction, which a DataTemplate can't do on its own —
+                                        so ShellWindow builds one DevicePage instance up front and
+                                        stashes it in Resources; this ContentPresenter just hosts it.
+                                    -->
+                                    <ContentPresenter Content="{StaticResource DevicePageContent}" />
                                 </DataTemplate>
                             </local:DestinationTemplateSelector.DeviceTemplate>
                             <local:DestinationTemplateSelector.BrowsePhoneTemplate>

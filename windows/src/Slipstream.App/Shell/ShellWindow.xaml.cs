@@ -31,6 +31,11 @@ public sealed partial class ShellWindow : Window
 
         InitializeComponent();
 
+        // See the DeviceTemplate's ContentPresenter comment: a DataTemplate can't take
+        // constructor arguments, so the one DevicePage instance is built here (where the
+        // injected peerHost is in scope) and hosted by name from the resource dictionary.
+        RootGrid.Resources["DevicePageContent"] = new Pages.DevicePage(peerHost);
+
         ExtendsContentIntoTitleBar = true;
         SetTitleBar(AppTitleBar);
 

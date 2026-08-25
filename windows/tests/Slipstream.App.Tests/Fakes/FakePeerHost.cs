@@ -12,6 +12,8 @@ public sealed class FakePeerHost : IPeerHost
     public PeerConnectionState State { get; private set; } = PeerConnectionState.Idle;
     public string? PeerName { get; private set; }
     public string? Band { get; private set; }
+    public string? DiscoveryStrategy { get; private set; }
+    public TimeSpan? DiscoveryElapsed { get; private set; }
 
     public event Action<PeerConnectionState, string?, string?>? StateChanged;
 
@@ -21,6 +23,13 @@ public sealed class FakePeerHost : IPeerHost
         PeerName = peerName;
         Band = band;
         StateChanged?.Invoke(state, peerName, band);
+    }
+
+    /// <summary>Simulates a completed discovery (e.g. immediately before a Connected state).</summary>
+    public void RaiseDiscovery(string strategy, TimeSpan elapsed)
+    {
+        DiscoveryStrategy = strategy;
+        DiscoveryElapsed = elapsed;
     }
 
     public Task StartAsync(CancellationToken ct) => Task.CompletedTask;

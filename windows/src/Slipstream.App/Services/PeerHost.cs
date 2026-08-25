@@ -60,6 +60,10 @@ public sealed class PeerHost : IPeerHost, IAsyncDisposable
     // unreachable for now — this never fabricates a value Core has not measured.
     public string? Band { get; private set; }
 
+    public string? DiscoveryStrategy { get; private set; }
+
+    public TimeSpan? DiscoveryElapsed { get; private set; }
+
     public event Action<PeerConnectionState, string?, string?>? StateChanged;
 
     public async Task StartAsync(CancellationToken ct)
@@ -220,6 +224,9 @@ public sealed class PeerHost : IPeerHost, IAsyncDisposable
             SetState(PeerConnectionState.Lost);
             throw new InvalidOperationException("The paired peer refused the connection.");
         }
+
+        DiscoveryStrategy = found.StrategyName;
+        DiscoveryElapsed = found.Elapsed;
 
         _connection = connection;
         PeerName = _peer.Peers.Current?.DisplayName;

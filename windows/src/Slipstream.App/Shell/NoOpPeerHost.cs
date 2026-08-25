@@ -16,6 +16,8 @@ internal sealed class NoOpPeerHost : IPeerHost
     public PeerConnectionState State => PeerConnectionState.Idle;
     public string? PeerName => null;
     public string? Band => null;
+    public string? DiscoveryStrategy => null;
+    public TimeSpan? DiscoveryElapsed => null;
 
     public event Action<PeerConnectionState, string?, string?>? StateChanged
     {

@@ -5,6 +5,7 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:local="using:Slipstream.App.Pages"
+    xmlns:page="using:Slipstream_App.Pages"
     xmlns:meridian="using:Slipstream.Meridian.Controls"
     xmlns:files="using:Slipstream.Core.Files"
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
@@ -64,9 +65,17 @@
                 <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
 
-            <Button Grid.Column="0"
-                    Content="Back"
-                    Click="Back_Click" />
+            <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="8">
+                <Button Content="Back"
+                        Click="Back_Click" />
+                <!-- Real entry points into a transfer (finding #4): download queues a pull
+                     via the shared TransferQueue; stream hands the file straight to
+                     IPeerHost.StreamAsync (routed through PlaylistLauncher — see PeerHost). -->
+                <Button Content="Download"
+                        Click="Download_Click" />
+                <Button Content="Stream"
+                        Click="Stream_Click" />
+            </StackPanel>
 
             <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
                 <ToggleButton x:Name="AllChip" Content="All" IsChecked="True" Click="FilterChip_Click" />
@@ -103,9 +112,9 @@
                                             Visibility="{x:Bind IsGalleryView, Mode=OneWay, Converter={StaticResource InverseBoolToVisibilityConverter}}"
                                             DoubleTapped="DataGrid_DoubleTapped" />
 
-                <!-- Gallery view toggle for media-heavy folders: thumbnails load lazily from
-                     /thumb/{token} as rows scroll (spec §12) once the thumbnail-fetch path
-                     exists on IPeerHost; for now this shows name + type per entry. -->
+                <!-- Gallery view toggle for media-heavy folders: thumbnails load from
+                     /thumb/{token} (spec §12) via IPeerHost.GetThumbnailUrl; entries with no
+                     token (folders, non-media files) fall back to the plain surface tile. -->
                 <GridView x:Name="GalleryView"
                           ItemsSource="{x:Bind ViewModel.Entries, Mode=OneWay}"
                           Visibility="{x:Bind IsGalleryView, Mode=OneWay, Converter={StaticResource BoolToVisibilityConverter}}"
@@ -113,9 +122,12 @@
                     <GridView.ItemTemplate>
                         <DataTemplate x:DataType="files:FileEntry">
                             <StackPanel Width="120" Spacing="4" Margin="4">
-                                <Border Height="90"
-                                        Background="{ThemeResource MeridianSurfaceBrush}"
-                                        CornerRadius="6" />
+                                <Grid Height="90">
+                                    <Border Background="{ThemeResource MeridianSurfaceBrush}"
+                                            CornerRadius="6" />
+                                    <Image Source="{x:Bind page:BrowsePage.ThumbnailSource(ThumbnailToken), Mode=OneWay}"
+                                           Stretch="UniformToFill" />
+                                </Grid>
                                 <TextBlock Text="{x:Bind Name}"
                                            Style="{StaticResource MeridianBodyStyle}"
                                            TextTrimming="CharacterEllipsis" />

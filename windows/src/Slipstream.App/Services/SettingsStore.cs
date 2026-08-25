@@ -58,6 +58,8 @@ public sealed class SettingsStore
 
     /// <summary>Reads the persisted settings, or the defaults if no file exists yet (first
     /// run) or the file is empty/unreadable.</summary>
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2026",
+        Justification = "SettingsData is a closed, non-polymorphic record with only primitive/enum members; nothing here needs reflection metadata that trimming would remove.")]
     public SettingsData Load()
     {
         lock (_sync)
@@ -79,6 +81,8 @@ public sealed class SettingsStore
     }
 
     /// <summary>Overwrites the persisted settings with <paramref name="data"/>.</summary>
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2026",
+        Justification = "SettingsData is a closed, non-polymorphic record with only primitive/enum members; nothing here needs reflection metadata that trimming would remove.")]
     public void Save(SettingsData data)
     {
         ArgumentNullException.ThrowIfNull(data);

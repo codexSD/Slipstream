@@ -48,5 +48,12 @@ public interface IPeerHost
     Task<string> PullAsync(string remotePath, IProgress<TransferProgress>? progress, CancellationToken ct);
     Task StreamAsync(string remotePath, CancellationToken ct);
     Task SendClipboardAsync(string text, CancellationToken ct);
+
+    /// <summary>Resolves a <see cref="Files.FileEntry.ThumbnailToken"/> into a loadable HTTP
+    /// URL against the connected peer's media server (spec §9: thumbnails are served the
+    /// same way as media streams — a token URL against the peer's advertised address), or
+    /// null when not currently connected to a peer. No network round trip: the token is
+    /// already known from the listing that produced it, so this is pure URL construction.</summary>
+    string? GetThumbnailUrl(string thumbnailToken);
     Task<PairedPeer?> PairAsync(Func<string, CancellationToken, Task<bool>> confirm, CancellationToken ct);
 }

@@ -11,8 +11,8 @@ using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Navigation;
 using Microsoft.UI.Xaml.Shapes;
-using AppShell = Slipstream.App.Shell;
 using Slipstream.App.Services;
+using Slipstream.Core;
 
 // To learn more about WinUI, the WinUI project structure,
 // and more about our project templates, see: http://aka.ms/winui-project-info.
@@ -87,8 +87,29 @@ public partial class App : Application
         _showRequestedEvent = new EventWaitHandle(false, EventResetMode.AutoReset, ShowFirstInstanceEventName);
         WatchForShowRequestsAsync();
 
-        // TODO(Task 8): replace NoOpPeerHost with the real PeerHost implementation.
-        _peerHost = new AppShell.NoOpPeerHost();
+        // Load persisted settings BEFORE constructing the peer/PeerHost, so a chosen
+        // download directory and stream count actually take effect from this launch
+        // onward (settings changes made while running apply on the *next* launch —
+        // see SettingsPage's "takes effect on restart" note).
+        var settingsStore = new SettingsStore();
+        var settings = settingsStore.Load();
+
+        var stateDirectory = System.IO.Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Slipstream");
+
+        var peer = new SlipstreamPeer(stateDirectory, Environment.MachineName)
+        {
+            DownloadDirectory = settings.DownloadDirectory,
+            StreamCount = settings.StreamCount,
+        };
+
+        var peerHost = new PeerHost(peer, settings.DownloadDirectory);
+        _peerHost = peerHost;
+
+        // Fire-and-forget: StartAsync's own discovery/connect loop reports progress via
+        // StateChanged, which the shell's view models already observe — nothing here needs
+        // to block window construction/activation on the peer finding its match.
+        _ = peerHost.StartAsync(CancellationToken.None);
 
         _shellWindow = new Slipstream_App.Shell.ShellWindow(_peerHost);
         _window = _shellWindow;

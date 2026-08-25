@@ -74,7 +74,7 @@ public sealed partial class HistoryRow : ObservableObject
 /// a terminal Status, so the list reflects newly completed/failed transfers without requiring
 /// navigation away from and back to the History page.
 /// </summary>
-public sealed partial class HistoryViewModel : ObservableObject
+public sealed partial class HistoryViewModel : ObservableObject, IDisposable
 {
     private readonly HistoryStore _store;
     private readonly TransferQueue _queue;
@@ -93,6 +93,13 @@ public sealed partial class HistoryViewModel : ObservableObject
         Refresh();
 
         _queue.ItemUpdated += OnTransferUpdated;
+    }
+
+    /// <summary>Unsubscribes from the long-lived <see cref="TransferQueue.ItemUpdated"/>
+    /// event — see DeviceViewModel.Dispose's remarks.</summary>
+    public void Dispose()
+    {
+        _queue.ItemUpdated -= OnTransferUpdated;
     }
 
     // TransferQueue.ItemUpdated fires from whatever background thread ran the transfer (see

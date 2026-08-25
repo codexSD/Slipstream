@@ -47,11 +47,26 @@
                             Active leaf is a filled Brand pill (spec §12): override the
                             themed selection brushes ListViewItem's default template reads,
                             scoped to this list only, rather than touching the app theme.
+                            These MUST live inside ThemeDictionaries (mirroring App.xaml) —
+                            a plain ResourceDictionary entry resolves {StaticResource} once at
+                            parse time and would not follow a live theme switch.
                         -->
-                        <StaticResource x:Key="ListViewItemBackgroundSelected" ResourceKey="MeridianBrandBrush" />
-                        <StaticResource x:Key="ListViewItemBackgroundSelectedPointerOver" ResourceKey="MeridianBrandBrush" />
-                        <StaticResource x:Key="ListViewItemBackgroundSelectedPressed" ResourceKey="MeridianBrandStrongBrush" />
-                        <StaticResource x:Key="ListViewItemForegroundSelected" ResourceKey="MeridianOnBrandBrush" />
+                        <ResourceDictionary>
+                            <ResourceDictionary.ThemeDictionaries>
+                                <ResourceDictionary x:Key="Light">
+                                    <StaticResource x:Key="ListViewItemBackgroundSelected" ResourceKey="MeridianBrandBrush" />
+                                    <StaticResource x:Key="ListViewItemBackgroundSelectedPointerOver" ResourceKey="MeridianBrandBrush" />
+                                    <StaticResource x:Key="ListViewItemBackgroundSelectedPressed" ResourceKey="MeridianBrandStrongBrush" />
+                                    <StaticResource x:Key="ListViewItemForegroundSelected" ResourceKey="MeridianOnBrandBrush" />
+                                </ResourceDictionary>
+                                <ResourceDictionary x:Key="Dark">
+                                    <StaticResource x:Key="ListViewItemBackgroundSelected" ResourceKey="MeridianBrandBrush" />
+                                    <StaticResource x:Key="ListViewItemBackgroundSelectedPointerOver" ResourceKey="MeridianBrandBrush" />
+                                    <StaticResource x:Key="ListViewItemBackgroundSelectedPressed" ResourceKey="MeridianBrandStrongBrush" />
+                                    <StaticResource x:Key="ListViewItemForegroundSelected" ResourceKey="MeridianOnBrandBrush" />
+                                </ResourceDictionary>
+                            </ResourceDictionary.ThemeDictionaries>
+                        </ResourceDictionary>
                     </ListView.Resources>
                     <ListView.ItemTemplate>
                         <DataTemplate x:DataType="local:ShellDestination">
@@ -67,7 +82,7 @@
                             <Setter Property="Foreground" Value="{ThemeResource MeridianInkMutedBrush}" />
                             <Setter Property="Padding" Value="0" />
                             <Setter Property="Margin" Value="0,2" />
-                            <Setter Property="MinHeight" Value="0" />
+                            <Setter Property="MinHeight" Value="44" />
                             <Setter Property="CornerRadius" Value="18" />
                         </Style>
                     </ListView.ItemContainerStyle>
@@ -129,8 +144,9 @@
                             </local:DestinationTemplateSelector.BrowsePhoneTemplate>
                             <local:DestinationTemplateSelector.TransfersTemplate>
                                 <DataTemplate>
-                                    <TextBlock Text="Transfers — placeholder, replaced by a later task."
-                                               Style="{StaticResource MeridianBodyStyle}" />
+                                    <!-- Same pattern as DeviceTemplate: TransfersPage needs its
+                                         TransferQueue injected at construction. -->
+                                    <ContentPresenter Content="{StaticResource TransfersPageContent}" />
                                 </DataTemplate>
                             </local:DestinationTemplateSelector.TransfersTemplate>
                             <local:DestinationTemplateSelector.HistoryTemplate>

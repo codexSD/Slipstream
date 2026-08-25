@@ -52,6 +52,28 @@ public class DeviceViewModelTests
     }
 
     [Fact]
+    public void Transferred_today_sums_todays_completed_history_entries()
+    {
+        // Regression coverage for review finding #12: TransferredTodayText IS computable once
+        // a HistoryStore is supplied — unlike LinkRateText, which genuinely has no data source.
+        var store = new HistoryStore(Path.Combine(Path.GetTempPath(), $"slipstream-test-{Guid.NewGuid():N}.json"));
+        var today = DateTimeOffset.UtcNow;
+        var yesterday = today.AddDays(-1);
+
+        store.Add(new HistoryEntry("/a.mp4", "C:\\a.mp4", 1_000_000, TransferStatus.Complete, today));
+        store.Add(new HistoryEntry("/b.mp4", "C:\\b.mp4", 500_000, TransferStatus.Complete, today));
+        store.Add(new HistoryEntry("/c.mp4", "C:\\c.mp4", 9_999_999, TransferStatus.Failed, today)); // not Complete — excluded
+        store.Add(new HistoryEntry("/d.mp4", "C:\\d.mp4", 9_999_999, TransferStatus.Complete, yesterday)); // not today — excluded
+
+        var host = new FakePeerHost();
+        var vm = new DeviceViewModel(host, historyStore: store);
+
+        host.RaiseState(PeerConnectionState.Connected, "Kai's iPhone");
+
+        Assert.Equal("1.4 MB", vm.TransferredTodayText);
+    }
+
+    [Fact]
     public void Hero_metric_shows_resting_value_when_no_live_transfer_is_in_progress()
     {
         var host = new FakePeerHost();
@@ -129,6 +151,7 @@ public class DeviceViewModelTests
         public Task<ListResult> ListAsync(string path, CancellationToken ct) => Task.FromResult(new ListResult(path, [], false));
         public Task StreamAsync(string remotePath, CancellationToken ct) => Task.CompletedTask;
         public Task SendClipboardAsync(string text, CancellationToken ct) => Task.CompletedTask;
+        public string? GetThumbnailUrl(string thumbnailToken) => null;
 
         public Task<PairedPeer?> PairAsync(Func<string, CancellationToken, Task<bool>> confirm, CancellationToken ct)
             => Task.FromResult<PairedPeer?>(null);

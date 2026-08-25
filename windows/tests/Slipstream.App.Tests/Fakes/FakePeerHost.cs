@@ -78,6 +78,12 @@ public sealed class FakePeerHost : IPeerHost
 
     public Task SendClipboardAsync(string text, CancellationToken ct) => Task.CompletedTask;
 
+    /// <summary>What <see cref="GetThumbnailUrl"/> returns for any token; null (the
+    /// "not connected" case) by default.</summary>
+    public Func<string, string?> ThumbnailUrlFactory { get; set; } = _ => null;
+
+    public string? GetThumbnailUrl(string thumbnailToken) => ThumbnailUrlFactory(thumbnailToken);
+
     public async Task<PairedPeer?> PairAsync(Func<string, CancellationToken, Task<bool>> confirm, CancellationToken ct)
     {
         var confirmed = await confirm(PairingCode, ct);

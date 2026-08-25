@@ -30,7 +30,7 @@ namespace Slipstream.App.Pages;
 /// would just be speculative surface Task 15 may not want anyway.
 /// </para>
 /// </remarks>
-public sealed partial class SettingsViewModel : ObservableObject
+public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 {
     private readonly SettingsStore _store;
     private readonly IPeerHost _peerHost;
@@ -83,6 +83,10 @@ public sealed partial class SettingsViewModel : ObservableObject
 
         peerHost.StateChanged += OnPeerStateChanged;
     }
+
+    /// <summary>Unsubscribes from the long-lived <see cref="IPeerHost.StateChanged"/> event —
+    /// see DeviceViewModel.Dispose's remarks.</summary>
+    public void Dispose() => _peerHost.StateChanged -= OnPeerStateChanged;
 
     /// <summary>Number of parallel streams a pull uses. Clamped to [1,8] — spec's bounded
     /// range for SlipstreamPeer.StreamCount (Slipstream.Core.SlipstreamPeer).</summary>

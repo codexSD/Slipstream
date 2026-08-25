@@ -14,5 +14,33 @@ jobs:
       - name: Meridian WinUI gate
         run: bash windows/scripts/check-meridian-winui.sh
         shell: bash
-      - run: dotnet test windows/Slipstream.sln --configuration Release
+      - name: Test
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Slipstream.App/Slipstream.App.Tests are WinUI unpackaged desktop projects that
+          # only produce a working build under an explicit platform (x64) — without
+          # -p:Platform=x64, Slipstream.App.Tests.dll loads from the wrong architecture
+          # output path and fails with a FileNotFoundException on Slipstream.App.dll before
+          # a single test runs, while `dotnet test` still exits 0 for the projects that DID
+          # build. Both symptoms must be caught here so a "0 tests ran" regression fails CI.
+          # Debug, not Release: Slipstream.App's PublishTrimmed=true (Release-only) triggers a
+          # full ILLink trim analysis during `dotnet test` itself (pre-existing across many
+          # Core JSON call sites — RequiresUnreferencedCode on JsonSerializer — unrelated to
+          # anything this change touches) that fails the build before a single test runs.
+          # Fixing that properly means annotating every JSON call site in Core; Debug avoids
+          # it entirely and is what actually exercises the test suite.
+          # No fixed LogFileName: this solution has two test projects (Slipstream.Core.Tests,
+          # Slipstream.App.Tests), and a shared trx filename would have the second project's
+          # results silently overwrite the first's, undercounting the total below. Leaving
+          # the logger to auto-name each result file avoids that.
+          dotnet test windows/Slipstream.sln --configuration Debug -p:Platform=x64 \
+            --logger trx --results-directory TestResults
+
+          total=$(grep -ohE '<UnitTestResult ' TestResults/*.trx | wc -l)
+          echo "Total tests reported: $total"
+          if [ -z "$total" ] || [ "$total" -lt 100 ]; then
+            echo "::error::Expected several hundred tests to run; got '$total'. Treating this as a broken test run, not a pass." >&2
+            exit 1
+          fi
       - run: dotnet run --project windows/bench/Slipstream.Bench --configuration Release

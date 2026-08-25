@@ -72,6 +72,30 @@ public class PeerHostTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task PullAsync_surfaces_a_peer_refusal_immediately_instead_of_retrying_it()
+    {
+        // Regression test for review finding #9: a genuine protocol-level refusal (the peer
+        // explicitly saying "no", e.g. a file that no longer exists) must NOT be treated as a
+        // transient connectivity failure worth retrying 40x over 20 seconds — it should
+        // surface as soon as the peer's single reply arrives.
+        await using var rig = await TwoPeers.StartAsync(_dir, _cts.Token);
+        await using var host = new PeerHost(rig.Client, downloadDirectory: _downloads);
+        await host.StartAsync(_cts.Token);
+
+        var missingPath = Path.Combine(_sharedDir, "does-not-exist.bin");
+
+        var sw = Stopwatch.StartNew();
+        await Assert.ThrowsAsync<Slipstream.Core.Control.ControlProtocolException>(
+            () => host.PullAsync(missingPath, progress: null, _cts.Token));
+        sw.Stop();
+
+        // 40 retries at 500ms would be ~20s; a non-retried refusal should come back in well
+        // under a second of real network round trips.
+        Assert.True(sw.Elapsed < TimeSpan.FromSeconds(5),
+            $"Expected an immediate refusal, but PullAsync took {sw.Elapsed} — looks like it retried.");
+    }
+
+    [Fact]
     public async Task PullAsync_does_not_hold_the_control_gate_for_the_whole_transfer()
     {
         // Regression test: PullAsync used to hold _gate for the full bulk transfer, which

@@ -74,6 +74,8 @@ public sealed class HistoryStore
         }
     }
 
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2026",
+        Justification = "HistoryEntry is a closed, non-polymorphic record with only primitive/enum members; nothing here needs reflection metadata that trimming would remove.")]
     private List<HistoryEntry> ReadAll()
     {
         if (!File.Exists(_path)) return [];
@@ -84,6 +86,8 @@ public sealed class HistoryStore
         return JsonSerializer.Deserialize<List<HistoryEntry>>(json, JsonOptions) ?? [];
     }
 
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2026",
+        Justification = "HistoryEntry is a closed, non-polymorphic record with only primitive/enum members; nothing here needs reflection metadata that trimming would remove.")]
     private void WriteAll(List<HistoryEntry> entries)
     {
         var dir = Path.GetDirectoryName(_path);

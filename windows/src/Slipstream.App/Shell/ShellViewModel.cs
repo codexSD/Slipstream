@@ -22,8 +22,9 @@ public sealed record ShellDestination(string Label);
 /// it must marshal onto the UI thread first, exactly like <c>TransfersViewModel</c>'s and
 /// <c>DeviceViewModel</c>'s <c>RunOnUiThread</c> helpers.
 /// </remarks>
-public sealed partial class ShellViewModel : ObservableObject
+public sealed partial class ShellViewModel : ObservableObject, IDisposable
 {
+    private readonly IPeerHost _peerHost;
     private readonly DispatcherQueue? _dispatcher;
 
     public IReadOnlyList<ShellDestination> Destinations { get; } =
@@ -60,11 +61,16 @@ public sealed partial class ShellViewModel : ObservableObject
     public ShellViewModel(IPeerHost peerHost, DispatcherQueue? dispatcher = null)
     {
         ArgumentNullException.ThrowIfNull(peerHost);
+        _peerHost = peerHost;
         _selected = Destinations[0];
         _dispatcher = dispatcher ?? TryGetCurrentDispatcher();
 
         peerHost.StateChanged += OnPeerStateChanged;
     }
+
+    /// <summary>Unsubscribes from the long-lived <see cref="IPeerHost.StateChanged"/> event —
+    /// see DeviceViewModel.Dispose's remarks.</summary>
+    public void Dispose() => _peerHost.StateChanged -= OnPeerStateChanged;
 
     // StateChanged can now fire from PeerHost's background reconnect loop (see remarks),
     // so the resulting property mutations must be marshaled onto the UI thread.

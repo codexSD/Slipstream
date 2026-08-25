@@ -26,7 +26,7 @@ public sealed record DiscoveryStrategyRow(string Code, string Name, bool IsWinne
 /// (no history/stats store), and link rate is a different, still-unavailable measurement (the
 /// negotiated/PHY rate, not a transfer's observed throughput). Those remain a documented gap.
 /// </remarks>
-public sealed partial class DeviceViewModel : ObservableObject
+public sealed partial class DeviceViewModel : ObservableObject, IDisposable
 {
     private static readonly IReadOnlyList<(string Code, string Name)> Strategies =
     [
@@ -47,6 +47,7 @@ public sealed partial class DeviceViewModel : ObservableObject
 
     private readonly IPeerHost _peerHost;
     private readonly TransferQueue? _transferQueue;
+    private readonly HistoryStore? _historyStore;
     private readonly DispatcherQueue? _dispatcher;
 
     private string _linkRateText = "—";
@@ -98,11 +99,12 @@ public sealed partial class DeviceViewModel : ObservableObject
         set => SetProperty(ref _discoverySummaryText, value);
     }
 
-    public DeviceViewModel(IPeerHost peerHost, TransferQueue? transferQueue = null, DispatcherQueue? dispatcher = null)
+    public DeviceViewModel(IPeerHost peerHost, TransferQueue? transferQueue = null, DispatcherQueue? dispatcher = null, HistoryStore? historyStore = null)
     {
         ArgumentNullException.ThrowIfNull(peerHost);
         _peerHost = peerHost;
         _transferQueue = transferQueue;
+        _historyStore = historyStore;
         _dispatcher = dispatcher ?? TryGetCurrentDispatcher();
 
         _discoveryStrategies = BuildStrategyRows();
@@ -111,6 +113,18 @@ public sealed partial class DeviceViewModel : ObservableObject
         peerHost.StateChanged += OnPeerStateChanged;
         if (_transferQueue is not null)
             _transferQueue.ItemUpdated += OnTransferUpdated;
+    }
+
+    /// <summary>Unsubscribes from the long-lived <see cref="IPeerHost.StateChanged"/> and
+    /// <see cref="TransferQueue.ItemUpdated"/> events this view model subscribed to at
+    /// construction. Harmless today (the shell builds exactly one long-lived instance per
+    /// session, matching IPeerHost's/TransferQueue's own lifetime), but correct to have in
+    /// case a page ever stops being a singleton.</summary>
+    public void Dispose()
+    {
+        _peerHost.StateChanged -= OnPeerStateChanged;
+        if (_transferQueue is not null)
+            _transferQueue.ItemUpdated -= OnTransferUpdated;
     }
 
     // StateChanged now fires from PeerHost's background reconnect loop (Task 16's
@@ -123,7 +137,17 @@ public sealed partial class DeviceViewModel : ObservableObject
     // TransferQueue.ItemUpdated fires from a background thread inside TransferQueue.RunAsync
     // (see its class remarks), so the resulting HeroRateText mutation must be marshaled onto
     // the UI thread — mirrors TransfersViewModel's RunOnUiThread helper.
-    private void OnTransferUpdated(TransferItem item) => RunOnUiThread(RefreshHeroRate);
+    private void OnTransferUpdated(TransferItem item) => RunOnUiThread(() =>
+    {
+        RefreshHeroRate();
+
+        // A transfer just finished (successfully or not) — today's completed-bytes total
+        // may have changed. HistoryStore.Add runs synchronously in ShellWindow's own
+        // ItemUpdated subscriber, so by the time this handler observes a terminal status
+        // the new entry is already persisted and ready to be summed.
+        if (item.Status is TransferStatus.Complete or TransferStatus.Failed)
+            RefreshTransferredToday();
+    });
 
     /// <summary>Sums <see cref="BytesPerSecond"/> across every currently-running transfer.
     /// Callers must already be on the UI thread — see <see cref="OnTransferUpdated"/>.</summary>
@@ -175,11 +199,45 @@ public sealed partial class DeviceViewModel : ObservableObject
         DiscoveryStrategies = BuildStrategyRows();
         DiscoverySummaryText = BuildSummary(state);
 
-        // No live-rate source is available yet (see remarks) — these stay at their
-        // resting placeholder regardless of connection state.
+        // LinkRateText has no live data source (no Wi-Fi metrics anywhere in Core) — an
+        // honest resting placeholder, not a fabricated value. TransferredTodayText, unlike
+        // LinkRateText, IS computable now that HistoryStore exists — see RefreshTransferredToday.
         LinkRateText = "—";
-        TransferredTodayText = "—";
+        RefreshTransferredToday();
         RefreshHeroRate();
+    }
+
+    /// <summary>Sums the size of every entry in <see cref="HistoryStore"/> whose
+    /// <see cref="HistoryEntry.CompletedAtUtc"/> falls on today's local date, formatted the
+    /// same way <c>HistoryViewModel.SizeText</c> formats a single entry's size. Resting "—"
+    /// when no HistoryStore was supplied (matches every other unavailable-metric case on this
+    /// page) or nothing has completed today.</summary>
+    private void RefreshTransferredToday()
+    {
+        if (_historyStore is null)
+        {
+            TransferredTodayText = "—";
+            return;
+        }
+
+        var today = DateTimeOffset.Now.Date;
+        var totalBytes = _historyStore.GetAll()
+            .Where(entry => entry.Status == TransferStatus.Complete && entry.CompletedAtUtc.ToLocalTime().Date == today)
+            .Sum(entry => entry.TotalBytes);
+
+        TransferredTodayText = totalBytes > 0 ? FormatSize(totalBytes) : "—";
+    }
+
+    private static string FormatSize(long bytes)
+    {
+        const double Kb = 1024d, Mb = Kb * 1024d, Gb = Mb * 1024d;
+        return bytes switch
+        {
+            >= (long)Gb => $"{bytes / Gb:0.0} GB",
+            >= (long)Mb => $"{bytes / Mb:0.0} MB",
+            >= (long)Kb => $"{bytes / Kb:0.0} KB",
+            _ => $"{bytes} B",
+        };
     }
 
     private IReadOnlyList<DiscoveryStrategyRow> BuildStrategyRows()

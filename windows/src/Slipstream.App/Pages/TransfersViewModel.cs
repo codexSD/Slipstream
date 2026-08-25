@@ -14,7 +14,7 @@ namespace Slipstream.App.Pages;
 /// them behind a UI-thread timer rather than dispatching one update per report — the grid
 /// refreshes at most 4 times/sec regardless of how many transfers are in flight.
 /// </summary>
-public sealed partial class TransfersViewModel : ObservableObject
+public sealed partial class TransfersViewModel : ObservableObject, IDisposable
 {
     private const int MaxUpdatesPerSecond = 4;
 
@@ -41,8 +41,25 @@ public sealed partial class TransfersViewModel : ObservableObject
         {
             _throttle = _dispatcher.CreateTimer();
             _throttle.Interval = TimeSpan.FromMilliseconds(1000d / MaxUpdatesPerSecond);
-            _throttle.Tick += (_, _) => FlushIfDirty();
+            _throttle.Tick += OnThrottleTick;
             _throttle.Start();
+        }
+    }
+
+    private void OnThrottleTick(DispatcherQueueTimer sender, object e) => FlushIfDirty();
+
+    /// <summary>Unsubscribes from the long-lived <see cref="TransferQueue.ItemEnqueued"/>/
+    /// <see cref="TransferQueue.ItemUpdated"/> events and stops the throttle timer — see
+    /// DeviceViewModel.Dispose's remarks.</summary>
+    public void Dispose()
+    {
+        _queue.ItemEnqueued -= OnItemEnqueued;
+        _queue.ItemUpdated -= OnItemUpdated;
+
+        if (_throttle is not null)
+        {
+            _throttle.Tick -= OnThrottleTick;
+            _throttle.Stop();
         }
     }
 

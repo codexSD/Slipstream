@@ -73,6 +73,15 @@
                                 Click="ChooseFolderButton_Click"
                                 VerticalAlignment="Center" />
                     </Grid>
+
+                    <!--
+                        Direct, honest, no apology (spec §15): stream count is bound into
+                        SlipstreamPeer as an init-only property at construction, so a live
+                        change genuinely cannot take effect without restarting the peer.
+                    -->
+                    <TextBlock Text="Takes effect the next time Slipstream starts."
+                               Style="{StaticResource MeridianBodyStyle}"
+                               Foreground="{ThemeResource MeridianInkMutedBrush}" />
                 </StackPanel>
             </meridian:MeridianCard>
 

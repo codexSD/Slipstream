@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Net;
 using System.Runtime.Versioning;
 using Slipstream.Core;
@@ -6,9 +5,19 @@ using Slipstream.Core.Control;
 using Slipstream.Core.Control.Handlers;
 using Slipstream.Core.Files;
 using Slipstream.Core.Identity;
+using Slipstream.Core.Platform;
 using Slipstream.Core.Transfer;
 
 namespace Slipstream.App.Services;
+
+/// <summary>
+/// Thrown by <see cref="PeerHost.SendRequestAsync"/> when the control connection closes mid
+/// round trip. Deliberately NOT a <see cref="ControlProtocolException"/>: that type means the
+/// peer explicitly refused a request (e.g. "file no longer exists" — not worth retrying), while
+/// this means the connection itself dropped — a connectivity-class failure the reconnect loop
+/// is already recovering from, which the retry loops in <see cref="PeerHost"/> DO retry.
+/// </summary>
+public sealed class ControlConnectionLostException(string message) : Exception(message);
 
 /// <summary>
 /// The single owner of one <see cref="SlipstreamPeer"/>'s lifetime and the one control
@@ -41,6 +50,11 @@ public sealed class PeerHost : IPeerHost, IAsyncDisposable
 
     private readonly SlipstreamPeer _peer;
     private readonly string _downloadDirectory;
+    // Spec §8: a bare http:// URL handed to ShellExecute opens the default *browser*, not
+    // the default media player — the same class of bug PlaylistLauncher already fixes for
+    // the phone→PC "play" path (see SlipstreamSession). PC-initiated StreamAsync routes
+    // through the same launcher so both directions resolve to a real media player.
+    private readonly PlaylistLauncher _playlistLauncher = new(Path.Combine(Path.GetTempPath(), "slipstream"));
     private readonly SemaphoreSlim _gate = new(1, 1);
     // Serialises ReconnectAsync itself: it can be entered both by a caller driving recovery
     // directly and by the NetworkChanged-driven loop, and interleaving two DropConnectionAsync
@@ -55,6 +69,11 @@ public sealed class PeerHost : IPeerHost, IAsyncDisposable
     private bool _started;
     private bool _disposed;
     private int _handlingNetworkChange;
+    // Incremented on every NetworkChanged raise (see OnNetworkChanged). Lets ReconnectAsync
+    // detect that the network moved again while an attempt was mid-flight, so a connection
+    // that finishes against the network the attempt STARTED against isn't mistaken for a
+    // successful reconnect to the network that is current NOW — see ReconnectAsync's remarks.
+    private int _networkGeneration;
 
     public PeerHost(SlipstreamPeer peer, string downloadDirectory)
     {
@@ -99,35 +118,61 @@ public sealed class PeerHost : IPeerHost, IAsyncDisposable
         await ConnectAsync(ct);
     }
 
+    /// <remarks>
+    /// Guards against a race where a caller-driven reconnect is mid-flight when
+    /// <see cref="OnNetworkChanged"/> fires (setting Lost, then blocking on
+    /// <see cref="_reconnectGate"/>): if the in-flight attempt, started against the OLD
+    /// network, completed and reported Connected AFTER the network actually changed, the
+    /// NetworkChanged-driven reconnect that follows would otherwise see "already Connected"
+    /// via the fast-path check and skip re-discovering on the NEW network entirely. The
+    /// generation counter captured at the start of each attempt is compared against the
+    /// current one before accepting success; a mismatch means the network moved again while
+    /// this attempt was running, so the connection it just brought up is stale and the loop
+    /// retries against whatever network is current now instead of reporting a false success.
+    /// </remarks>
     public async Task<bool> ReconnectAsync(CancellationToken ct)
     {
         if (IsDiscoveryPaused) return false;
 
-        await _reconnectGate.WaitAsync(ct);
-        try
+        while (true)
         {
-            // Already reconnected by whoever held the gate before us (e.g. the
-            // NetworkChanged loop winning a race against a caller-driven reconnect) —
-            // nothing left to do, and re-entering would tear down the fresh connection.
-            if (State == PeerConnectionState.Connected) return true;
+            var generation = Volatile.Read(ref _networkGeneration);
 
-            using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, _lifetime.Token);
-            await DropConnectionAsync();
-
+            await _reconnectGate.WaitAsync(ct);
             try
             {
-                await ConnectAsync(linked.Token);
+                // Already reconnected by whoever held the gate before us (e.g. the
+                // NetworkChanged loop winning a race against a caller-driven reconnect) —
+                // nothing left to do, and re-entering would tear down the fresh connection.
+                // Only trusted if the network hasn't moved again since we captured `generation`.
+                if (State == PeerConnectionState.Connected && generation == Volatile.Read(ref _networkGeneration))
+                    return true;
+
+                using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, _lifetime.Token);
+                await DropConnectionAsync();
+
+                try
+                {
+                    await ConnectAsync(linked.Token);
+                }
+                catch (Exception) when (!ct.IsCancellationRequested)
+                {
+                    SetState(PeerConnectionState.Lost);
+                    return false;
+                }
+
+                // The network changed again while this very attempt was connecting: the
+                // connection just established may be against a network that is no longer
+                // current. Loop and retry rather than reporting a stale success.
+                if (generation != Volatile.Read(ref _networkGeneration))
+                    continue;
+
                 return State == PeerConnectionState.Connected;
             }
-            catch (Exception) when (!ct.IsCancellationRequested)
+            finally
             {
-                SetState(PeerConnectionState.Lost);
-                return false;
+                _reconnectGate.Release();
             }
-        }
-        finally
-        {
-            _reconnectGate.Release();
         }
     }
 
@@ -228,7 +273,13 @@ public sealed class PeerHost : IPeerHost, IAsyncDisposable
                 await WaitForConnectionAsync(ct);
                 return await RequestTransferAsync(remotePath, ct);
             }
-            catch (Exception ex) when (!ct.IsCancellationRequested)
+            // Only connectivity-class failures (timeouts, socket errors, a dropped
+            // connection) are worth retrying here — those are exactly what the reconnect
+            // loop (heartbeat- or NetworkChanged-driven) is already recovering from. A
+            // ControlProtocolException is the peer explicitly refusing the request (e.g.
+            // "file no longer exists") — retrying that 40 times just delays surfacing a
+            // real, non-transient failure to the user by 20 seconds.
+            catch (Exception ex) when (ex is not ControlProtocolException && !ct.IsCancellationRequested)
             {
                 last = ex;
                 await Task.Delay(ResumeRetryDelay, ct);
@@ -261,7 +312,11 @@ public sealed class PeerHost : IPeerHost, IAsyncDisposable
 
         var transferId = Guid.Parse(response.TransferId);
         var token = Guid.Parse(response.Token);
-        var destination = Path.Combine(_downloadDirectory, response.Name);
+        // response.Name comes off the wire from the peer: strip any directory-traversal
+        // components before it becomes a path component, so a malicious/corrupted peer
+        // response can't write outside the download directory (defense-in-depth given the
+        // paired-only trust model).
+        var destination = Path.Combine(_downloadDirectory, Path.GetFileName(response.Name));
         var streams = Math.Min(_peer.StreamCount, response.Streams);
 
         var part = PartFile.OpenOrCreate(destination, transferId, response.Size, response.ChunkSize);
@@ -306,7 +361,13 @@ public sealed class PeerHost : IPeerHost, IAsyncDisposable
                 await bulk.DownloadAsync(resumeEndpoint, retryTransferId, retryToken, part, retryStreams, progress, ct);
                 return;
             }
-            catch (Exception ex) when (!ct.IsCancellationRequested)
+            // Only connectivity-class failures (timeouts, socket errors, a dropped
+            // connection) are worth retrying here — those are exactly what the reconnect
+            // loop (heartbeat- or NetworkChanged-driven) is already recovering from. A
+            // ControlProtocolException is the peer explicitly refusing the request (e.g.
+            // "file no longer exists") — retrying that 40 times just delays surfacing a
+            // real, non-transient failure to the user by 20 seconds.
+            catch (Exception ex) when (ex is not ControlProtocolException && !ct.IsCancellationRequested)
             {
                 last = ex;
                 await Task.Delay(ResumeRetryDelay, ct);
@@ -334,6 +395,11 @@ public sealed class PeerHost : IPeerHost, IAsyncDisposable
 
     private void OnNetworkChanged()
     {
+        // Bump on every raise (not just the coalesced ones below) — this is what lets
+        // ReconnectAsync detect "the network moved again while my attempt was in flight",
+        // even for a raise that gets coalesced away by _handlingNetworkChange.
+        Interlocked.Increment(ref _networkGeneration);
+
         // Coalesce bursts of NetworkChange.NetworkAddressChanged (the OS can fire it more
         // than once for a single physical switch) into a single reconnect loop.
         if (Interlocked.CompareExchange(ref _handlingNetworkChange, 1, 0) != 0) return;
@@ -386,9 +452,22 @@ public sealed class PeerHost : IPeerHost, IAsyncDisposable
         var response = reply.PayloadAs<PlayMessage>()
             ?? throw new ControlProtocolException("The peer sent a malformed stream response.");
 
-        // Fire and forget — spec §8: no remote control, no position sync. The OS default
-        // handler for the URL owns playback from here.
-        Process.Start(new ProcessStartInfo(response.Url) { UseShellExecute = true })?.Dispose();
+        // Fire and forget — spec §8: no remote control, no position sync. PlaylistLauncher
+        // (not a bare ShellExecute on the URL) owns handing playback off to a real media
+        // player from here.
+        _playlistLauncher.Launch(new PlayRequest(response.Url, response.Title, response.Mime));
+    }
+
+    public string? GetThumbnailUrl(string thumbnailToken)
+    {
+        if (_connection is not { } connection) return null;
+
+        // Same "/thumb/{token}" route MediaServer already serves (see MediaServer's raw,
+        // non-vaulted thumbnail lookup) against the same fixed media port every server
+        // binds to (SlipstreamPorts.Media) — the same convention StreamAsync's response.Url
+        // resolves against, just built locally since the token is already in hand from the
+        // listing, with no control round trip needed.
+        return $"http://{connection.RemoteEndPoint.Address}:{SlipstreamPorts.Media}/thumb/{thumbnailToken}";
     }
 
     public async Task SendClipboardAsync(string text, CancellationToken ct)
@@ -471,7 +550,7 @@ public sealed class PeerHost : IPeerHost, IAsyncDisposable
             while (true)
             {
                 var message = await connection.ReceiveAsync(ct)
-                    ?? throw new ControlProtocolException("The peer closed the control connection.");
+                    ?? throw new ControlConnectionLostException("The peer closed the control connection.");
 
                 if (message.Id == id) return message;
                 // Anything else interleaved on the wire is not this request's reply; keep reading.

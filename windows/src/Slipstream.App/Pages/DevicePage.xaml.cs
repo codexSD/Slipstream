@@ -12,9 +12,9 @@ public sealed partial class DevicePage : Page
 {
     public DeviceViewModel ViewModel { get; }
 
-    public DevicePage(IPeerHost peerHost, TransferQueue? transferQueue = null)
+    public DevicePage(IPeerHost peerHost, TransferQueue? transferQueue = null, HistoryStore? historyStore = null)
     {
-        ViewModel = new DeviceViewModel(peerHost, transferQueue);
+        ViewModel = new DeviceViewModel(peerHost, transferQueue, historyStore: historyStore);
         InitializeComponent();
     }
 }

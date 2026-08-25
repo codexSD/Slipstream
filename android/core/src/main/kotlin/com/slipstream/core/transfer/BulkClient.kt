@@ -1,5 +1,6 @@
 package com.slipstream.core.transfer
 
+import com.slipstream.core.net.NetworkBinder
 import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.net.InetSocketAddress
@@ -25,6 +26,7 @@ private data class RangeTask(val rangeStart: Long, val rangeLength: Long)
 class BulkClient(
     private val connectTimeoutMs: Int = 5000,
     private val socketTimeoutMs: Int = 15000,
+    private val binder: NetworkBinder = NetworkBinder.NONE,
 ) {
     fun download(
         endpoint: InetSocketAddress,
@@ -82,6 +84,7 @@ class BulkClient(
         onProgress: ((Long) -> Unit)?,
     ) {
         Socket().use { socket ->
+            binder.bind(socket)
             socket.connect(endpoint, connectTimeoutMs)
             socket.soTimeout = socketTimeoutMs
 

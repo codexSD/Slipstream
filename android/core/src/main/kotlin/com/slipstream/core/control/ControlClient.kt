@@ -2,6 +2,7 @@ package com.slipstream.core.control
 
 import com.slipstream.core.identity.DeviceIdentity
 import com.slipstream.core.identity.PairedPeerStore
+import com.slipstream.core.net.NetworkBinder
 import java.net.InetSocketAddress
 
 /**
@@ -13,10 +14,12 @@ object ControlClient {
         endpoint: InetSocketAddress,
         identity: DeviceIdentity,
         peerStore: PairedPeerStore,
+        binder: NetworkBinder = NetworkBinder.NONE,
     ): ControlConnection {
-        val socket = PinnedTls.connect(endpoint, identity) { fingerprint ->
+        val socket = PinnedTls.connect(endpoint, identity, binder) { fingerprint ->
             peerStore.peer?.fingerprint == fingerprint
         }
-        return ControlConnection(socket)
+        return ControlConnection(socket, socket.session.peerCertificates.firstOrNull()
+            ?.let { (it as? java.security.cert.X509Certificate)?.let(com.slipstream.core.identity.Fingerprint::of) })
     }
 }

@@ -3,6 +3,7 @@ package com.slipstream.core.control
 import com.slipstream.core.identity.DeviceIdentity
 import com.slipstream.core.identity.Fingerprint
 import com.slipstream.core.net.LanGuard
+import com.slipstream.core.net.NetworkBinder
 import java.net.InetSocketAddress
 import java.security.KeyStore
 import java.security.SecureRandom
@@ -78,12 +79,17 @@ object PinnedTls {
     fun connect(
         endpoint: InetSocketAddress,
         identity: DeviceIdentity,
+        binder: NetworkBinder = NetworkBinder.NONE,
         isPinned: (String) -> Boolean,
     ): SSLSocket {
         LanGuard.ensureLocal(endpoint.address)
 
-        val socket = socketFactory(identity).createSocket(endpoint.address, endpoint.port) as SSLSocket
+        // Created unconnected so the socket can be bound to a specific Network (spec §11
+        // layer 3) before the TCP handshake begins - binding after connect() is too late.
+        val socket = socketFactory(identity).createSocket() as SSLSocket
         try {
+            binder.bind(socket)
+            socket.connect(endpoint)
             socket.useClientMode = true
             socket.startHandshake()
 

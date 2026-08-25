@@ -25,6 +25,9 @@ class TransferEngine(
     private val bulkClient: BulkClient = BulkClient(),
     private val maxAttempts: Int = 3,
 ) {
+    constructor(binder: com.slipstream.core.net.NetworkBinder, maxAttempts: Int = 3) :
+        this(BulkClient(binder = binder), maxAttempts)
+
     /**
      * Pulls the missing chunks of [part] via [BulkClient.download], retrying up to
      * [maxAttempts] times. Returns normally once [part] reports complete; otherwise rethrows

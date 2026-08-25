@@ -1,6 +1,7 @@
 package com.slipstream.core.discovery
 
 import com.slipstream.core.SlipstreamPorts
+import com.slipstream.core.net.NetworkBinder
 import java.net.DatagramPacket
 import java.net.InetSocketAddress
 import java.net.MulticastSocket
@@ -32,10 +33,14 @@ interface MulticastTransport : AutoCloseable {
 /** Real [MulticastTransport] backed by a JDK [MulticastSocket] bound to the discovery port. */
 class UdpMulticastTransport(
     networkInterface: NetworkInterface? = null,
+    binder: NetworkBinder = NetworkBinder.NONE,
 ) : MulticastTransport {
 
     private val socket = MulticastSocket(SlipstreamPorts.DISCOVERY).apply {
         reuseAddress = true
+        // Layer 3: bind before joining the group / sending, so discovery traffic is scoped
+        // to the active LAN even if another network (e.g. cellular) also has a route.
+        binder.bind(this)
         val group = InetSocketAddress(SlipstreamPorts.MULTICAST_GROUP, SlipstreamPorts.DISCOVERY)
         if (networkInterface != null) {
             joinGroup(group, networkInterface)

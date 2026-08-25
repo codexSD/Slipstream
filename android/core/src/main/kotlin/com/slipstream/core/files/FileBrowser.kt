@@ -84,7 +84,7 @@ object FileBrowser {
         return DirectoryListing(entries, truncated)
     }
 
-    private fun mimeFor(name: String): String {
+    fun mimeFor(name: String): String {
         val ext = name.substringAfterLast('.', missingDelimiterValue = "").lowercase()
         return mimeByExtension[ext] ?: "application/octet-stream"
     }

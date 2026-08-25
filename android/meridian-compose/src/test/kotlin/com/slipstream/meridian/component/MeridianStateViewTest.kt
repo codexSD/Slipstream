@@ -86,13 +86,15 @@ class MeridianStateViewTest {
 
     @Test
     fun `every state renders in dark mode`() {
-        listOf(
+        val states = listOf(
             MeridianUiState.Loading,
             MeridianUiState.Content,
             MeridianUiState.Empty("Empty"),
             MeridianUiState.Error("Error"),
-        ).forEach { state ->
-            compose.setContent {
+        )
+
+        compose.setContent {
+            states.forEach { state ->
                 MeridianTheme(darkTheme = true) { MeridianStateView(state) { Text("Content") } }
             }
         }

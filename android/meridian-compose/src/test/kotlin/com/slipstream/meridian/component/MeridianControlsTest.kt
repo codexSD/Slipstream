@@ -1,7 +1,10 @@
 package com.slipstream.meridian.component
 
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
@@ -45,15 +48,24 @@ class MeridianControlsTest {
 
     @Test
     fun `filter chip renders selected and unselected in both modes`() {
-        listOf(false, true).forEach { dark ->
-            listOf(false, true).forEach { selected ->
-                compose.setContent {
-                    MeridianTheme(darkTheme = dark) {
-                        MeridianFilterChip("Video", selected = selected, onClick = {})
-                    }
+        val combos = listOf(false, true).flatMap { dark -> listOf(false, true).map { selected -> dark to selected } }
+
+        compose.setContent {
+            combos.forEach { (dark, selected) ->
+                val tag = "chip-dark=$dark-selected=$selected"
+                MeridianTheme(darkTheme = dark) {
+                    MeridianFilterChip(
+                        "Video",
+                        selected = selected,
+                        onClick = {},
+                        modifier = Modifier.testTag(tag),
+                    )
                 }
-                compose.onNodeWithText("Video").assertIsDisplayed()
             }
+        }
+
+        combos.forEach { (dark, selected) ->
+            compose.onNodeWithTag("chip-dark=$dark-selected=$selected").assertIsDisplayed()
         }
     }
 

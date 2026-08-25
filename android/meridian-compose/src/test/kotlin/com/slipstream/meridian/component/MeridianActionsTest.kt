@@ -1,5 +1,9 @@
 package com.slipstream.meridian.component
 
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
@@ -67,20 +71,23 @@ class MeridianActionsTest {
     fun `stepper increments and decrements within bounds`() {
         var value = 4
         compose.setContent {
+            var current by remember { mutableIntStateOf(4) }
+            value = current
             MeridianTheme {
-                MeridianStepper(value = value, onValueChange = { value = it }, min = 1, max = 8)
+                MeridianStepper(
+                    value = current,
+                    onValueChange = {
+                        current = it
+                        value = it
+                    },
+                    min = 1,
+                    max = 8,
+                )
             }
         }
 
         compose.onNodeWithContentDescription("Increase").performClick()
         assertEquals(5, value)
-
-        // Recompose with updated value
-        compose.setContent {
-            MeridianTheme {
-                MeridianStepper(value = value, onValueChange = { value = it }, min = 1, max = 8)
-            }
-        }
 
         compose.onNodeWithContentDescription("Decrease").performClick()
         assertEquals(4, value)

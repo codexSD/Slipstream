@@ -2,9 +2,12 @@ package com.slipstream.meridian.component
 
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Wifi
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import com.slipstream.meridian.MeridianTheme
@@ -31,13 +34,21 @@ class MeridianStatusPillTest {
 
     @Test
     fun `renders every status in light and dark`() {
-        MeridianStatus.entries.forEach { status ->
-            listOf(false, true).forEach { dark ->
-                compose.setContent {
-                    MeridianTheme(darkTheme = dark) { MeridianStatusPill(status, status.name) }
+        val combos = MeridianStatus.entries.flatMap { status ->
+            listOf(false, true).map { dark -> status to dark }
+        }
+
+        compose.setContent {
+            combos.forEach { (status, dark) ->
+                val tag = "pill-${status.name}-dark=$dark"
+                MeridianTheme(darkTheme = dark) {
+                    MeridianStatusPill(status, status.name, modifier = Modifier.testTag(tag))
                 }
-                compose.onNodeWithText(status.name).assertIsDisplayed()
             }
+        }
+
+        combos.forEach { (status, dark) ->
+            compose.onNodeWithTag("pill-${status.name}-dark=$dark").assertIsDisplayed()
         }
     }
 

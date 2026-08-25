@@ -1,0 +1,13 @@
+{
+  "description": "Canonical announcement payloads. Field names and ordering are normative.",
+  "cases": [
+    {
+      "name": "announce",
+      "json": "{\"v\":1,\"deviceId\":\"abc123\",\"name\":\"Test PC\",\"fingerprint\":\"deadbeef\",\"control\":53321,\"kind\":\"announce\"}"
+    },
+    {
+      "name": "query",
+      "json": "{\"v\":1,\"deviceId\":\"abc123\",\"name\":\"Test PC\",\"fingerprint\":\"deadbeef\",\"control\":53321,\"kind\":\"query\"}"
+    }
+  ]
+}

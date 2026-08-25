@@ -1,0 +1,20 @@
+{
+  "description": "Pairing code derivation vectors. sorted(a,b) -> concat -> SHA-256 -> first 4 bytes big-endian -> mod 1000000 -> 6 digits.",
+  "cases": [
+    {
+      "a": "0000000000000000000000000000000000000000000000000000000000000000",
+      "b": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "code": "048846"
+    },
+    {
+      "a": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "b": "0000000000000000000000000000000000000000000000000000000000000000",
+      "code": "048846"
+    },
+    {
+      "a": "1111111111111111111111111111111111111111111111111111111111111111",
+      "b": "2222222222222222222222222222222222222222222222222222222222222222",
+      "code": "448183"
+    }
+  ]
+}

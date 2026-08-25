@@ -9,6 +9,63 @@
 
     <local:BoolToVisibilityConverter x:Key="BoolToVisibilityConverter" />
     <local:StatusBrushKeyToBrushConverter x:Key="StatusBrushKeyToBrushConverter" />
+    <local:GridLengthToPixelWidthConverter x:Key="GridLengthToPixelWidthConverter" />
+
+    <!--
+      Row container style for MeridianDataGrid: hairline bottom border, 44px floor,
+      selection/hover driven by a background Rectangle whose Opacity is stepped by the
+      standard ListViewItem CommonStates (Normal/PointerOver/Selected/PointerOverSelected).
+      Selection uses MeridianTintBrush full-opacity; hover uses the same brush at reduced
+      opacity as the "one step lighter" tint step, since the palette has no separate hover
+      token and Meridian colours live in one dictionary only.
+    -->
+    <Style x:Key="MeridianDataGridItemContainerStyle" TargetType="ListViewItem">
+        <Setter Property="MinHeight" Value="44" />
+        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+        <Setter Property="Padding" Value="0" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ListViewItem">
+                    <Border x:Name="PART_RowBorder"
+                            BorderBrush="{ThemeResource MeridianStrokeBrush}"
+                            BorderThickness="0,0,0,1"
+                            MinHeight="{TemplateBinding MinHeight}">
+                        <Grid>
+                            <VisualStateManager.VisualStateGroups>
+                                <VisualStateGroup x:Name="CommonStates">
+                                    <VisualState x:Name="Normal" />
+                                    <VisualState x:Name="PointerOver">
+                                        <VisualState.Setters>
+                                            <Setter Target="RowSelectionBackground.Opacity" Value="0.5" />
+                                        </VisualState.Setters>
+                                    </VisualState>
+                                    <VisualState x:Name="Selected">
+                                        <VisualState.Setters>
+                                            <Setter Target="RowSelectionBackground.Opacity" Value="1" />
+                                        </VisualState.Setters>
+                                    </VisualState>
+                                    <VisualState x:Name="PointerOverSelected">
+                                        <VisualState.Setters>
+                                            <Setter Target="RowSelectionBackground.Opacity" Value="0.8" />
+                                        </VisualState.Setters>
+                                    </VisualState>
+                                </VisualStateGroup>
+                            </VisualStateManager.VisualStateGroups>
+
+                            <Rectangle x:Name="RowSelectionBackground"
+                                       Fill="{ThemeResource MeridianTintBrush}"
+                                       Opacity="0" />
+
+                            <ContentPresenter x:Name="RowContentPresenter"
+                                               Content="{TemplateBinding Content}"
+                                               HorizontalAlignment="Left"
+                                               VerticalAlignment="Center" />
+                        </Grid>
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
 
     <!--
       MeridianCard: Surface fill, lg radius, 1px stroke, no elevation. No content padding
@@ -263,6 +320,65 @@
             <Setter.Value>
                 <ControlTemplate TargetType="local:MeridianHeroMetric">
                     <TextBlock Text="{TemplateBinding Value}" Style="{StaticResource MeridianHeroMetricStyle}" />
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!--
+      MeridianDataGrid: the admin-table workhorse. Built on ListView (see MeridianDataGrid.cs
+      remarks for the row-rendering architecture). Header row is an ItemsControl bound to
+      Columns, laid out left-to-right, sitting above the ListView with a hairline bottom border
+      underneath it — the only stroke element in this template, and deliberately there is no
+      column/vertical-separator element anywhere. Row separators and the 44px row floor live on
+      the nested ListViewItem style below (ItemContainerStyle); selection uses MeridianTintBrush
+      full-opacity, hover uses the same brush at reduced opacity as the "one step lighter" tint
+      step, since the palette has no separate hover token and Meridian colours live in one
+      dictionary only.
+    -->
+    <Style TargetType="local:MeridianDataGrid">
+        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+        <Setter Property="VerticalContentAlignment" Value="Stretch" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="local:MeridianDataGrid">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+
+                        <Border Grid.Row="0"
+                                x:Name="PART_HeaderBorder"
+                                BorderBrush="{ThemeResource MeridianStrokeBrush}"
+                                BorderThickness="0,0,0,1">
+                            <ItemsControl x:Name="PART_HeaderItems" ItemsSource="{TemplateBinding Columns}">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate>
+                                        <StackPanel Orientation="Horizontal" />
+                                    </ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <TextBlock x:Name="PART_HeaderCellText"
+                                                   Text="{Binding Header}"
+                                                   Foreground="{ThemeResource MeridianInkMutedBrush}"
+                                                   Style="{StaticResource MeridianLabelStyle}"
+                                                   Width="{Binding Width, Converter={StaticResource GridLengthToPixelWidthConverter}}"
+                                                   Padding="12,8,12,8"
+                                                   VerticalAlignment="Center" />
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </Border>
+
+                        <ListView Grid.Row="1"
+                                  x:Name="PART_ListView"
+                                  ItemsSource="{TemplateBinding ItemsSource}"
+                                  SelectionMode="Single"
+                                  IsItemClickEnabled="False"
+                                  ItemContainerStyle="{StaticResource MeridianDataGridItemContainerStyle}" />
+                    </Grid>
                 </ControlTemplate>
             </Setter.Value>
         </Setter>

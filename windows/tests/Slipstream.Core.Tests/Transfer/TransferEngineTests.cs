@@ -80,4 +80,18 @@ public class TransferEngineTests : IAsyncLifetime
 
         Assert.Empty(Directory.GetFiles(_peers.Client.DownloadDirectory, "*.slipstream-part"));
     }
+
+    [Fact]
+    public async Task Recovers_when_the_control_connection_dies_mid_transfer()
+    {
+        // The scenario the retry exists for: the control channel itself drops.
+        var engine = _peers.Client.Engine;
+
+        await _peers.Connection.DisposeAsync(); // kill it before the pull
+
+        var local = await engine.PullAsync(
+            _peers.Connection, _peers.ServerEndPoint, _sourcePath, null, _cts.Token);
+
+        Assert.Equal(_payload, await File.ReadAllBytesAsync(local, _cts.Token));
+    }
 }

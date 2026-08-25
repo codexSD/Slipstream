@@ -2,7 +2,9 @@
 
 **Date:** 2026-08-25
 **Plan:** [`2026-08-25-transfer-remediation.md`](2026-08-25-transfer-remediation.md)
-**Executed via:** subagent-driven development, 8 tasks with review between tasks and two fix rounds within Task 5.
+**Executed via:** subagent-driven development, 8 tasks with review between tasks, two fix rounds
+within Task 5, one fix round within Task 7, and a final whole-branch review with one consolidated
+fix wave.
 
 Everything below is a place where the delivered code differs from the plan's verbatim text, or
 where the plan's own scope left a gap that surfaced during implementation. Each entry states what
@@ -15,9 +17,11 @@ changed, why, and whether it's closed or carried forward.
 Plan 2 (`2026-08-25-core-transfer-media.md`) shipped a stubbed `ThumbnailProvider` with
 `ThumbnailProviderTests.cs` commented out in its entirety — a single `/* ... */` block wrapping the
 whole file. This was found by code review, not by the test suite: the suite reported 235/235 green
-while masking a completely non-functional feature. This plan's Task 1 restored the tests
-(confirming 4 of 6 failed against the stub, as expected), and Task 2 implemented the real
-shell-backed provider, bringing the suite to 242/242.
+while masking a completely non-functional feature. This plan's Task 1 restored the tests (the file
+contains 7 tests; 4 failed against the stub as expected, 2 passed trivially since a stub returns
+null for everything, and the replacement `Returns_null_for_a_zero_byte_file_of_an_unknown_type`
+also passed trivially against the stub for the same reason), and Task 2 implemented the real
+shell-backed provider, bringing the suite to 242/242 (235 + 7).
 
 One test, `Returns_null_for_a_zero_byte_file_of_an_unknown_type`, needed its assertion relaxed to
 `result is null || File.Exists(result)` because this build machine's shell returns a generic icon
@@ -153,15 +157,98 @@ scope. **Not implemented here, and deliberately so.** A pointer was added to
 (Task 8, Step 2). **Carried forward** — real future work still needed, most likely alongside the
 WinUI reconnection UX.
 
-## Final state
+## Task 8 completion state
 
 Suite: 258/258 (256 entering this task + 2 new tests: `ClipboardReceived` fires with the exact
-text, and does not fire for an oversized payload), verified directly with `dotnet test`. One
-pre-existing intermittent failure was observed on the first run
+text, and does not fire for an oversized payload), verified directly with `dotnet test`. Bench:
+219.1 MB/s, above the 150 MB/s floor, PASS. Both greps for commented-out test files and `Skip =`
+markers report clean — the gate proving this plan's own trigger (Plan 2's stubbed feature with
+disabled tests) did not recur in this plan's own deliverables.
+
+An intermittent failure was observed on the first Task 8 verification run
 (`PartFileTests.Overlapping_debounced_persists_never_corrupt_the_sidecar`, an
-`UnauthorizedAccessException` from `File.Move` racing a concurrent temp-file rename under load —
-the Task 5 debounce-race regression test, timing-sensitive by nature) and confirmed flaky, not a
-regression, by an immediate clean re-run (258/258, 0 failures). Bench: 219.1 MB/s, above the
-150 MB/s floor, PASS. Both greps for commented-out test files and `Skip =` markers report clean —
-the gate proving this plan's own trigger (Plan 2's stubbed feature with disabled tests) did not
-recur in this plan's own deliverables.
+`UnauthorizedAccessException` from `File.Move`) and, at the time, characterized as flaky and
+non-regressing based on a single clean re-run. **Correction:** this was not flakiness — it was a
+real, reproducible defect in already-merged Task 5 code, caught properly by the final whole-branch
+review below (see "Unguarded opportunistic persist"). The apparent flakiness was because the race
+requires enough concurrent load to surface reliably, which not every run produced.
+
+## Final whole-branch review and consolidated fix wave
+
+The final review (dispatched on the most capable available model, after all 8 tasks were
+individually complete and approved) found issues that only became visible with the whole diff in
+view — interactions between tasks that no single task's scoped review could see. One consolidated
+fix dispatch closed all of them, followed by one scoped re-review, per process. No second fix wave
+was needed.
+
+### `TransferEngine._reconnected` bricked the engine after its first reconnect (Critical)
+
+`SlipstreamPeer` creates one `TransferEngine` per peer and reuses it for every pull via `Engine`.
+Task 6's reconnect fix stored the fresh connection in an instance field, `_reconnected`, and
+disposed it in `PullAsync`'s `finally` block — but never set the field back to `null`. Task 6's own
+task-scoped test only ever did one pull, so this passed review at the time. In the whole-branch
+view: any pull after the first successful reconnect would find `_reconnected` still non-null,
+short-circuit past the liveness probe entirely, and send on a disposed connection — permanently
+bricking recovery for the rest of the engine's (i.e. the peer's) lifetime. This is exactly the kind
+of defect a whole-branch review exists to catch, since it required Task 6's design to exist and
+more than one pull to happen — neither visible from a single task's diff.
+
+**Fix:** capture `_reconnected` into a local, null the field, then dispose the local — so the next
+pull starts clean. Added a regression test doing two sequential `PullAsync` calls on one engine,
+with the first forcing a reconnect. **Closed.**
+
+### Unguarded opportunistic persist could abort a healthy transfer (Important)
+
+`PartFile.WriteChunkAsync` called `PersistStateAsync` with no try/catch when the debounce window
+elapsed. `PersistStateAsync`'s `File.Move` can throw `UnauthorizedAccessException` on a transient
+Windows sharing violation (confirmed reproducible under real concurrent load — this is what the
+Task 8 "flaky" note above was actually catching). `UnauthorizedAccessException` doesn't derive from
+`IOException`, so `DisposeAsync`'s existing guard didn't cover it either, and the exception
+propagated out of `WriteChunkAsync`, aborting the whole chunk write and the transfer — a much
+harsher failure than the debounce design's own stated "best effort, lose at most 500ms" contract.
+
+**Fix:** catch `IOException` and `UnauthorizedAccessException` (not `OperationCanceledException`)
+around the persist call in `WriteChunkAsync`; move the `_dirty = false` reset to after the move
+succeeds (previously it cleared before attempting the write, so a swallowed failure would have left
+`DisposeAsync` believing there was nothing to flush — silently trading an abort for lost progress);
+widen `DisposeAsync`'s catch to include `UnauthorizedAccessException` too. **Closed.**
+
+### 5-minute bulk-token expiry could expire mid-transfer (Important)
+
+Task 3 shortened bulk token expiry from 24 hours to 5 minutes as a security tightening (see above),
+reasoning about attacker exposure window. It didn't account for Task 3's own semaphore-bounded
+concurrency: ranges beyond the first `streamCount` don't present their token until earlier ranges
+finish, so a transfer legitimately exceeding 5 minutes — an ordinary case at phone-hotspot speeds
+per spec §16 — could have later ranges rejected once the token expired, with the transfer's one
+available retry not always enough to finish the remaining work in time.
+
+**Fix:** raised `TokenVault.BulkLifetime` to 30 minutes — still 24-48× tighter than the original
+24 hours, but bounded against realistic transfer duration rather than only attacker patience.
+Updated the explanatory comment and the boundary test accordingly. **Closed.**
+
+### Debounce cadence test didn't test cadence (Important)
+
+`Does_not_rewrite_the_sidecar_on_every_chunk` (Task 5) only asserted the sidecar file existed and
+contained the word "Bitmap" — both true identically under the old per-chunk-write code the task
+existed to replace, so the test provided no actual regression protection for the cadence itself.
+
+**Fix:** added an internal, `Interlocked`-incremented persist counter to `PartFile`, incremented
+only after a successful write-and-move; the test now asserts the count stays well below the chunk
+count for 50 rapid writes. **Closed.**
+
+### Nine Minor findings — parked, not fixed
+
+The final review also surfaced nine Minor findings (half-open connection detection gaps, a raw
+`SocketException` surfacing instead of a friendly error message, `_completed` being set before a
+move that could still fail, unbounded `TokenVault`/`ThumbnailProvider` entry growth, a near-tautological
+relaxed assertion, test-naming nits, and a theoretical re-entrant `StartAsync` leak). None are
+load-bearing for this plan's scope — each is either pre-existing behavior unchanged by this plan,
+a documented and already-authorized trade, or a real but narrow edge case with no test coverage
+gap it's hiding. Parked as deferred follow-up work, not carried into a second fix wave.
+
+## Final state
+
+Suite: 259/259 (258 after Task 8 + 1 new regression test for the reconnect fix), verified with
+`dotnet test`. The previously-flaky `Overlapping_debounced_persists_never_corrupt_the_sidecar` test
+re-run cleanly 4/4 times after the persist-guard fix. Bench: 246.3 MB/s, above the 150 MB/s floor,
+PASS. Both greps for commented-out test files and `Skip =` markers report clean.

@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Security.Cryptography;
 using System.Text.Json;
 using Slipstream.Core.Transfer;
@@ -236,6 +237,57 @@ public class PartFileTests : IDisposable
 
         var finalState = await File.ReadAllTextAsync(statePath);
         JsonDocument.Parse(finalState); // still parses cleanly after disposal's flush
+    }
+
+    [Fact]
+    public async Task Cancelling_a_persist_queued_behind_another_does_not_break_the_gate()
+    {
+        // Regression for: releasing a SemaphoreSlim that was never acquired (because
+        // WaitAsync was cancelled while queued behind another in-flight persist) throws
+        // SemaphoreFullException, masking the real OperationCanceledException and
+        // corrupting the gate's count for subsequent callers.
+        //
+        // A cancelled token passed straight to WriteChunkAsync would most likely fault at
+        // the chunk write step (RandomAccess.WriteAsync) and never reach the persist gate
+        // at all, so this drives the private persist gate and method directly via
+        // reflection to deterministically force the "cancelled while queued" case.
+        var (data, crc) = ChunkOf(Chunk);
+
+        await using var part = PartFile.OpenOrCreate(Destination, _transfer, 4 * Chunk, Chunk);
+        await part.WriteChunkAsync(0, data, crc, CancellationToken.None); // establishes dirty state, gate free afterward
+
+        var gateField = typeof(PartFile).GetField("_persistGate", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        var gate = (SemaphoreSlim)gateField.GetValue(part)!;
+        var persistMethod = typeof(PartFile).GetMethod("PersistStateAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+
+        // Hold the gate ourselves, simulating an in-flight persist.
+        await gate.WaitAsync();
+        try
+        {
+            using var cts = new CancellationTokenSource();
+            cts.Cancel();
+
+            // This call must queue behind the held gate and then observe cancellation —
+            // it must throw OperationCanceledException, never SemaphoreFullException.
+            var queued = (Task)persistMethod.Invoke(part, [cts.Token])!;
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => queued);
+        }
+        finally
+        {
+            gate.Release(); // release our simulated in-flight persist
+        }
+
+        // The gate must be usable afterward — no leaked/duplicated count from the
+        // cancelled waiter incorrectly releasing.
+        var followUp = (Task)persistMethod.Invoke(part, [CancellationToken.None])!;
+        await followUp;
+
+        await part.WriteChunkAsync(1, data, crc, CancellationToken.None);
+        await part.WriteChunkAsync(2, data, crc, CancellationToken.None);
+        await part.WriteChunkAsync(3, data, crc, CancellationToken.None);
+
+        Assert.True(await part.CompleteAsync(CancellationToken.None));
     }
 
     [Fact]

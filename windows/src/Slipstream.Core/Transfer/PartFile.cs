@@ -199,16 +199,23 @@ public sealed class PartFile : IAsyncDisposable
         // Overlapping persists are possible: a slow write can still be in flight when the
         // next debounce window elapses. Serialize the write-and-move here (not the bit
         // flip) so overlapping calls queue instead of corrupting the shared temp file.
-        await _persistGate.WaitAsync(cancellationToken);
+        var acquired = false;
         try
         {
+            await _persistGate.WaitAsync(cancellationToken);
+            acquired = true;
+
             var staging = StatePath + ".tmp";
             await File.WriteAllTextAsync(staging, payload, cancellationToken);
             File.Move(staging, StatePath, overwrite: true);
         }
         finally
         {
-            _persistGate.Release();
+            // If WaitAsync itself was cancelled while queued, the semaphore was never
+            // acquired — releasing it here would throw SemaphoreFullException and mask
+            // the real OperationCanceledException, and corrupt the count for the next
+            // caller. Only release what we actually acquired.
+            if (acquired) _persistGate.Release();
         }
     }
 

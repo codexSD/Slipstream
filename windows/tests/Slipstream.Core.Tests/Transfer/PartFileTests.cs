@@ -135,6 +135,9 @@ public class PartFileTests : IDisposable
     {
         var (data, crc) = ChunkOf(Chunk);
         string statePath;
+        int persistCount;
+
+        var persistCountField = typeof(PartFile).GetField("PersistCount", BindingFlags.NonPublic | BindingFlags.Instance)!;
 
         await using (var part = PartFile.OpenOrCreate(Destination, _transfer, 50 * Chunk, Chunk))
         {
@@ -146,6 +149,9 @@ public class PartFileTests : IDisposable
             // 50 chunks written well inside one debounce window: the sidecar should have
             // been rewritten a handful of times, not fifty.
             Assert.True(File.Exists(statePath));
+
+            persistCount = (int)persistCountField.GetValue(part)!;
+            Assert.True(persistCount < 10, $"expected debounced persistence, got {persistCount} writes for 50 chunks");
         }
 
         // On disposal the final state must be durable regardless of the debounce.

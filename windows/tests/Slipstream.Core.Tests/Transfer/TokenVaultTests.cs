@@ -18,14 +18,14 @@ public class TokenVaultTests
     }
 
     [Fact]
-    public void A_bulk_token_expires_after_five_minutes()
+    public void A_bulk_token_expires_after_thirty_minutes()
     {
         var time = new FakeTimeProvider(DateTimeOffset.Parse("2026-08-25T10:00:00Z"));
         var vault = new TokenVault(time);
 
         var token = vault.IssueBulk(Transfer, @"C:\file.bin", 1000, expectedStreams: 4);
 
-        time.Advance(TimeSpan.FromMinutes(4));
+        time.Advance(TimeSpan.FromMinutes(29));
         Assert.NotNull(vault.ValidateBulk(token.Value, Transfer));
 
         time.Advance(TimeSpan.FromMinutes(2));

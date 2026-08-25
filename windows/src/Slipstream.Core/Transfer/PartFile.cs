@@ -138,7 +138,15 @@ public sealed class PartFile : IAsyncDisposable
             if (shouldPersist) _lastPersist = now;
         }
 
-        if (shouldPersist) await PersistStateAsync(cancellationToken);
+        if (shouldPersist)
+        {
+            // The sidecar is a progress hint, not the transfer itself. A transient lock (AV
+            // scanner, indexer) must not abort a chunk that is already durably written to the
+            // .part file — the next debounce window retries the persist.
+            try { await PersistStateAsync(cancellationToken); }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+        }
     }
 
     public async Task<bool> CompleteAsync(CancellationToken cancellationToken)
@@ -207,7 +215,6 @@ public sealed class PartFile : IAsyncDisposable
         lock (_bitmapGate)
         {
             payload = JsonSerializer.Serialize(new State(TransferId, Size, ChunkSize, Bitmap.ToBase64()));
-            _dirty = false;
         }
 
         // Overlapping persists are possible: a slow write can still be in flight when the
@@ -222,6 +229,12 @@ public sealed class PartFile : IAsyncDisposable
             var staging = StatePath + ".tmp";
             await File.WriteAllTextAsync(staging, payload, cancellationToken);
             File.Move(staging, StatePath, overwrite: true);
+
+            // Only clear dirty (and count the persist) once the move actually succeeded —
+            // a caller that swallows a transient write/move failure (see WriteChunkAsync)
+            // must still see _dirty=true so DisposeAsync's final flush isn't skipped.
+            lock (_bitmapGate) _dirty = false;
+            Interlocked.Increment(ref PersistCount);
         }
         finally
         {
@@ -232,6 +245,9 @@ public sealed class PartFile : IAsyncDisposable
             if (acquired) _persistGate.Release();
         }
     }
+
+    /// <summary>Number of times the sidecar was actually written-and-moved (test hook).</summary>
+    internal int PersistCount;
 
     public async ValueTask DisposeAsync()
     {
@@ -244,7 +260,7 @@ public sealed class PartFile : IAsyncDisposable
             if (dirty)
             {
                 try { await PersistStateAsync(CancellationToken.None); }
-                catch (IOException) { /* best effort on the way out */ }
+                catch (Exception e) when (e is IOException or UnauthorizedAccessException) { /* best effort on the way out */ }
             }
 
             await _stream.DisposeAsync();

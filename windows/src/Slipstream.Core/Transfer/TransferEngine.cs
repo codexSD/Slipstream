@@ -28,7 +28,11 @@ public sealed class TransferEngine(
         finally
         {
             if (_reconnected is not null)
-                await _reconnected.DisposeAsync();
+            {
+                var stale = _reconnected;
+                _reconnected = null;
+                await stale.DisposeAsync();
+            }
         }
     }
 

@@ -94,4 +94,29 @@ public class TransferEngineTests : IAsyncLifetime
 
         Assert.Equal(_payload, await File.ReadAllBytesAsync(local, _cts.Token));
     }
+
+    [Fact]
+    public async Task A_second_pull_on_the_same_engine_succeeds_after_an_earlier_reconnect()
+    {
+        // Regression for: TransferEngine._reconnected is sticky per-engine state. The
+        // first pull's finally block used to dispose the reconnected connection without
+        // clearing the field, so every later pull on the same engine returned that
+        // disposed connection straight from LiveConnectionAsync's fast path and failed
+        // immediately, with no way to self-heal.
+        var engine = _peers.Client.Engine;
+
+        await _peers.Connection.DisposeAsync(); // kill it before the first pull, forcing a reconnect
+
+        var first = await engine.PullAsync(
+            _peers.Connection, _peers.ServerEndPoint, _sourcePath, null, _cts.Token);
+        Assert.Equal(_payload, await File.ReadAllBytesAsync(first, _cts.Token));
+        File.Delete(first);
+
+        // The second pull reuses the same engine (and thus its now-dead-if-not-nulled
+        // _reconnected field) with the connection object the first pull already killed.
+        var second = await engine.PullAsync(
+            _peers.Connection, _peers.ServerEndPoint, _sourcePath, null, _cts.Token);
+
+        Assert.Equal(_payload, await File.ReadAllBytesAsync(second, _cts.Token));
+    }
 }

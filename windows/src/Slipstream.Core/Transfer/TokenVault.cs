@@ -18,7 +18,16 @@ public sealed class TokenVault(TimeProvider? time = null)
     // not size the budget, and a fragmented resume legitimately needs more connections
     // than there are streams. A tighter expiry replaces it — a stricter bound than the
     // counter ever was, and one that does not break a correct client.
-    private static readonly TimeSpan BulkLifetime = TimeSpan.FromMinutes(5);
+    //
+    // The bound must also be chosen against realistic transfer duration, not just
+    // attacker exposure window: BulkClient bounds concurrency with a semaphore sized
+    // to the stream count, so ranges beyond the first batch don't open their sockets
+    // (and don't present the token) until earlier ranges finish. Spec §16 documents
+    // phone-hotspot throughput as commonly 3-5 MB/s, so an ordinary ~1.5GB video can
+    // legitimately take several minutes end to end. 30 minutes is generous enough for
+    // any single large-file transfer at slow hotspot speeds while staying 24-48x
+    // tighter than the original 24-hour lifetime this replaced.
+    private static readonly TimeSpan BulkLifetime = TimeSpan.FromMinutes(30);
 
     private readonly TimeProvider _time = time ?? TimeProvider.System;
     private readonly ConcurrentDictionary<Guid, Entry> _entries = new();

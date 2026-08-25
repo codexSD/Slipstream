@@ -15,4 +15,5 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "Slipstream"
+include(":core")
 include(":meridian-compose")

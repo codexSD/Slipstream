@@ -12,6 +12,8 @@
             </ResourceDictionary.ThemeDictionaries>
             <ResourceDictionary.MergedDictionaries>
                 <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls" />
+                <ResourceDictionary Source="ms-appx:///Slipstream.Meridian/Themes/Typography.xaml" />
+                <ResourceDictionary Source="ms-appx:///Slipstream.Meridian/Themes/Shapes.xaml" />
                 <!-- Other merged dictionaries here -->
             </ResourceDictionary.MergedDictionaries>
             <!-- Other app resources here -->

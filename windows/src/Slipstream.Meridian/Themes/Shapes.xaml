@@ -1,0 +1,33 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!--
+      Corner radius resources for shape design. These define the Meridian design system's
+      curves: sm for small controls, md for standard cards/containers, lg for large elements.
+    -->
+    <CornerRadius x:Key="MeridianRadiusSm">12</CornerRadius>
+    <CornerRadius x:Key="MeridianRadiusMd">14</CornerRadius>
+    <CornerRadius x:Key="MeridianRadiusLg">16</CornerRadius>
+
+    <!--
+      Pill shape: a fully rounded container. WinUI CornerRadius does not support percentage-based
+      radii (unlike CSS border-radius: 50%), so we use a large uniform value (999) to approximate
+      the visual effect — for a Button or Container with typical dimensions, this renders as fully
+      rounded edges. The value is large enough to exceed any expected dimension without platform
+      artifacts.
+    -->
+    <CornerRadius x:Key="MeridianRadiusPill">999</CornerRadius>
+
+    <!--
+      Spacing resources on the 4pt grid. These define horizontal and vertical spacing throughout
+      the design system, allowing consistent layout composition. Defined as x:Double for maximum
+      flexibility in binding to Margin/Padding properties (either directly via converter, or as
+      individual Thickness components in complex layouts).
+    -->
+    <x:Double x:Key="MeridianSpacingXs">4</x:Double>
+    <x:Double x:Key="MeridianSpacingSm">8</x:Double>
+    <x:Double x:Key="MeridianSpacingMd">12</x:Double>
+    <x:Double x:Key="MeridianSpacingLg">16</x:Double>
+    <x:Double x:Key="MeridianSpacingXl">20</x:Double>
+    <x:Double x:Key="MeridianSpacingXxl">24</x:Double>
+</ResourceDictionary>

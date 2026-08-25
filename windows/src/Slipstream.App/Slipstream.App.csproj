@@ -13,6 +13,15 @@
     <EnableMsixTooling>true</EnableMsixTooling>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <!--
+      The WindowsAppSDK deployment-manager auto-initializer runs a COM activation at module
+      load that requires the packaged app identity (AUMID) to be registered. That registration
+      only exists for an installed/launched MSIX package, so it throws (REGDB_E_CLASSNOTREG)
+      the instant a unit test host loads this assembly. MSIX package installation still carries
+      its own dependency deployment, so disabling this redundant runtime auto-check is safe and
+      keeps Slipstream.App.dll loadable from xunit.
+    -->
+    <WindowsAppSdkDeploymentManagerInitialize>false</WindowsAppSdkDeploymentManagerInitialize>
   </PropertyGroup>
 
   <ItemGroup>

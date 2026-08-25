@@ -1,0 +1,28 @@
+# Android
+*.apk
+*.aab
+*.keystore
+*.jks
+local.properties
+.gradle/
+build/
+captures/
+.cxx/
+
+# .NET / Windows
+bin/
+obj/
+*.user
+*.suo
+.vs/
+BuildArtifacts/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# OS
+Thumbs.db
+desktop.ini
+.DS_Store

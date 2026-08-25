@@ -1,0 +1,21 @@
+name: android-meridian
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Token gate
+        run: bash android/scripts/check-meridian-tokens.sh
+      - name: Unit tests
+        run: cd android && ./gradlew :meridian-compose:testDebugUnitTest
+      - name: Screenshot tests
+        run: cd android && ./gradlew :meridian-compose:validateDebugScreenshotTest

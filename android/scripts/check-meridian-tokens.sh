@@ -2,7 +2,8 @@
 # Design-system gate. Runs first in CI: cheapest check, most likely to catch drift.
 set -euo pipefail
 
-MODULE="android/meridian-compose/src"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MODULE="$SCRIPT_DIR/../meridian-compose/src"
 TOKENS="$MODULE/main/kotlin/com/slipstream/meridian/MeridianTokens.kt"
 status=0
 

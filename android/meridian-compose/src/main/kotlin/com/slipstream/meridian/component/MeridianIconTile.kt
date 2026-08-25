@@ -33,15 +33,22 @@ fun MeridianIconTile(
 
     Box(
         modifier = modifier
-            .then(if (onClick != null) Modifier.sizeIn(minWidth = 44.dp, minHeight = 44.dp) else Modifier),
+            .then(
+                if (onClick != null) {
+                    Modifier
+                        .sizeIn(minWidth = 44.dp, minHeight = 44.dp)
+                        .clickable(onClick = onClick)
+                } else {
+                    Modifier
+                },
+            ),
         contentAlignment = Alignment.Center,
     ) {
         Box(
             modifier = Modifier
                 .size(size)
                 .clip(RoundedCornerShape(MeridianRadius.sm))
-                .background(colors.tint, RoundedCornerShape(MeridianRadius.sm))
-                .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
+                .background(colors.tint, RoundedCornerShape(MeridianRadius.sm)),
             contentAlignment = Alignment.Center,
         ) {
             Icon(

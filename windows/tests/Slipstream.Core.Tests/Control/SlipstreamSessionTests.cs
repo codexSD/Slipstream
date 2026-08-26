@@ -64,6 +64,25 @@ public class SlipstreamSessionTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task List_of_the_root_returns_the_drives_rather_than_an_error()
+    {
+        // "/" is the protocol's platform-neutral root. Android's browser starts there;
+        // Windows has no such path, so without special-casing it the peer is told
+        // "That folder is no longer there." and can never reach any file.
+        foreach (var root in new[] { "/", "", "\\" })
+        {
+            var reply = await _session.HandleAsync(
+                ControlMessage.Request("list", "1", new ListRequest(root, null)), _cts.Token);
+
+            Assert.Equal("list.ok", reply!.Type);
+
+            var payload = reply.PayloadAs<ListResponse>()!;
+            Assert.NotEmpty(payload.Entries);
+            Assert.All(payload.Entries, e => Assert.True(e.IsDirectory));
+        }
+    }
+
+    [Fact]
     public async Task List_of_a_missing_folder_returns_an_error_message()
     {
         var reply = await _session.HandleAsync(

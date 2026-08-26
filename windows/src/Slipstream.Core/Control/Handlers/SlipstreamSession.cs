@@ -76,6 +76,16 @@ public sealed class SlipstreamSession(
         var request = message.PayloadAs<ListRequest>();
         if (request is null) return Error(message, "list.error", "Missing request payload.");
 
+        // "/" is the protocol's platform-neutral root. Android has a real filesystem root,
+        // Windows does not — it has drives — so a peer asking for "/" gets the drive list.
+        // Without this an Android client, whose browser quite reasonably starts at "/",
+        // asks Windows for a path that means nothing there and is told the folder is gone.
+        if (string.IsNullOrWhiteSpace(request.Path) || request.Path is "/" or "\\")
+        {
+            return ControlMessage.Response("list.ok", message.Id!,
+                new ListResponse("/", browser.Roots(), Truncated: false));
+        }
+
         try
         {
             var result = browser.List(request.Path, request.Sort ?? "name");

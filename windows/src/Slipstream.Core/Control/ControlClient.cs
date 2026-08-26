@@ -3,6 +3,7 @@ using System.Net.Sockets;
 using Slipstream.Core.Discovery;
 using Slipstream.Core.Identity;
 using Slipstream.Core.Net;
+using Slipstream.Core.Pairing;
 
 namespace Slipstream.Core.Control;
 
@@ -26,6 +27,34 @@ public sealed class ControlClient(DeviceIdentity identity, PairedPeerStore peers
         {
             await using var connection = await ConnectAsync(endpoint, timeout, cancellationToken);
             return connection is null ? null : new DiscoveredPeer(peer, endpoint);
+        }
+        catch (Exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            return null;
+        }
+    };
+
+    /// <summary>
+    /// A probe for pairing discovery: answers "is there a device here that could pair with
+    /// us?". Unlike <see cref="CreateProbe"/> it accepts any peer — the six-digit code, not a
+    /// pinned fingerprint, is what establishes trust (protocol/pairing.md). The identity
+    /// reported is the peer's TLS certificate fingerprint; its device id and display name are
+    /// not known until it sends its pair.offer, so they are left empty here.
+    /// </summary>
+    public PairingProbe CreatePairingProbe(TimeSpan timeout) => async (endpoint, cancellationToken) =>
+    {
+        if (!LanGuard.IsLocal(endpoint.Address)) return null;
+
+        try
+        {
+            await using var connection = await ConnectForPairingAsync(endpoint, timeout, cancellationToken);
+            if (connection is null) return null;
+
+            // Never discover ourselves — the sweep can and does reach our own addresses.
+            if (string.Equals(connection.PeerFingerprint, identity.Fingerprint, StringComparison.OrdinalIgnoreCase))
+                return null;
+
+            return new UnpairedPeer(string.Empty, string.Empty, connection.PeerFingerprint, endpoint);
         }
         catch (Exception) when (!cancellationToken.IsCancellationRequested)
         {

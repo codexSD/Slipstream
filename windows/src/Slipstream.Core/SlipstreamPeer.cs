@@ -52,7 +52,12 @@ public sealed class SlipstreamPeer : IAsyncDisposable
         var probe = Client.CreateProbe(TimeSpan.FromSeconds(3));
 
         _multicast = new MulticastStrategy(Identity, Peers, probe);
-        PairingDiscovery = new PairingDiscovery(Identity, _multicast, Pairing);
+        // Same timeouts as paired discovery: the gateway is a single, known-interesting
+        // address and is worth waiting on; a 254-way sweep is not.
+        PairingDiscovery = new PairingDiscovery(
+            Identity, _multicast, Pairing, _networkInfo,
+            Client.CreatePairingProbe(TimeSpan.FromSeconds(3)),
+            Client.CreatePairingProbe(TimeSpan.FromMilliseconds(600)));
         _pairingCoordinator = new PairingCoordinator(Identity, Peers, Client, Pairing);
 
         _coordinator = new DiscoveryCoordinator(_networkInfo, cache,

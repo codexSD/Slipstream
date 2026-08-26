@@ -9,7 +9,7 @@ namespace Slipstream_App.Pages;
 /// Spec §12's Transfers page: a single MeridianDataGrid of every transfer this session has
 /// queued, with live progress/rate/ETA/status columns fed by <see cref="TransferQueue"/>.
 /// </summary>
-public sealed partial class TransfersPage : Page
+public sealed partial class TransfersPage : UserControl
 {
     public Slipstream.App.Pages.TransfersViewModel ViewModel { get; }
 

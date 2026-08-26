@@ -115,25 +115,56 @@ public class ShellWindowResourceOverrideTests
     }
 
     [Fact]
-    public void Transfers_destination_hosts_the_real_TransfersPage_not_a_placeholder()
+    public void Every_destination_hosts_its_real_view_not_a_placeholder()
     {
-        // Regression coverage for review finding #2: the Transfers destination must use the
-        // same ContentPresenter/StaticResource pattern as every other destination (Device,
-        // Browse phone, History, Settings), not a stand-in TextBlock.
-        var doc = LoadDocument();
+        // Regression coverage for review finding #2 (the Transfers destination must host the
+        // real TransfersPage, like every other destination) - restated against the mechanism
+        // that actually works at runtime.
+        //
+        // The original form of this check asserted a ContentPresenter/{StaticResource} pattern
+        // where each view was stashed in a ResourceDictionary. That pattern cannot work: WinUI
+        // flags every ResourceDictionary value as shareable, so assigning one to
+        // ContentControl.Content throws E_INVALIDARG and the process dies inside
+        // Window.Activate() before a window is ever shown. The views are now constructed and
+        // swapped in from the code-behind instead.
+        var codeBehind = File.ReadAllText(TestPaths.App("Shell/ShellWindow.xaml.cs"));
 
-        var transfersTemplate = doc.Descendants()
-            .FirstOrDefault(e => e.Name.LocalName == "DestinationTemplateSelector.TransfersTemplate");
+        foreach (var (label, view) in new[]
+        {
+            ("Device", "DevicePage"),
+            ("Browse phone", "BrowsePage"),
+            ("Transfers", "TransfersPage"),
+            ("History", "HistoryPage"),
+            ("Settings", "SettingsPage"),
+        })
+        {
+            Assert.Contains($"[\"{label}\"] = new Pages.{view}(", codeBehind);
+        }
 
-        Assert.True(transfersTemplate is not null, "Expected a TransfersTemplate in ShellWindow.xaml.");
-
-        var presenter = transfersTemplate!.Descendants()
-            .FirstOrDefault(e => e.Name.LocalName == "ContentPresenter");
-
-        Assert.True(presenter is not null,
-            "Transfers destination must host TransfersPageContent via ContentPresenter, like every other destination.");
-        Assert.Contains("TransfersPageContent", presenter!.Attribute("Content")?.Value ?? string.Empty);
-
+        Assert.Contains("PageHost.Content =", codeBehind);
         Assert.DoesNotContain("placeholder", LoadSource(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Destination_views_are_never_smuggled_through_a_resource_dictionary()
+    {
+        // The launch-blocking bug: a UIElement retrieved from a ResourceDictionary cannot be
+        // assigned to ContentControl.Content. Neither the shell markup nor its code-behind may
+        // reintroduce that pattern.
+        var xaml = LoadSource();
+        var codeBehind = File.ReadAllText(TestPaths.App("Shell/ShellWindow.xaml.cs"));
+
+        foreach (var key in new[]
+        {
+            "DevicePageContent",
+            "BrowsePageContent",
+            "TransfersPageContent",
+            "HistoryPageContent",
+            "SettingsPageContent",
+        })
+        {
+            Assert.DoesNotContain(key, xaml);
+            Assert.DoesNotContain(key, codeBehind);
+        }
     }
 }

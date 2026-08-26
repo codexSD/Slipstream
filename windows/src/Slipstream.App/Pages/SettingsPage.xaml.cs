@@ -8,7 +8,7 @@ namespace Slipstream_App.Pages;
 /// The Settings page (Task 14): stream count, download folder, theme, "Pair a device", and
 /// the autostart preference, each in its own MeridianCard with a 20px gap between cards.
 /// </summary>
-public sealed partial class SettingsPage : Page
+public sealed partial class SettingsPage : UserControl
 {
     private readonly IPeerHost _peerHost;
 

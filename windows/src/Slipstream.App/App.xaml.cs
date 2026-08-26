@@ -52,6 +52,33 @@ public partial class App : Application
     public App()
     {
         InitializeComponent();
+
+        // The app is sideloaded and unpackaged: when XAML throws during startup the process
+        // dies with no console, no window and only a generic 0xc000027b in the event log
+        // (this is exactly how the shell's page-hosting bug went unnoticed for a whole plan).
+        // Writing the exception somewhere durable is the only way a user - or a smoke test -
+        // can tell what actually happened.
+        UnhandledException += (_, e) => LogFatal(e.Exception);
+    }
+
+    /// <summary>Path of the crash log written when startup fails; also read by the smoke test.</summary>
+    public static string FatalLogPath => System.IO.Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "Slipstream",
+        "startup-error.log");
+
+    internal static void LogFatal(Exception exception)
+    {
+        try
+        {
+            var path = FatalLogPath;
+            System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(path)!);
+            System.IO.File.AppendAllText(path, $"{DateTimeOffset.Now:O} {exception}{Environment.NewLine}");
+        }
+        catch
+        {
+            // A crash logger that throws would replace one silent failure with another.
+        }
     }
 
     /// <summary>

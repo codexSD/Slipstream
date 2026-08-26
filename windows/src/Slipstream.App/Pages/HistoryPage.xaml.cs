@@ -10,7 +10,7 @@ namespace Slipstream_App.Pages;
 /// HistoryStore), newest first, with "Reveal in folder" (disabled once the local file is gone)
 /// and "Run again" (re-enqueues via the shared TransferQueue) acting on the selected row.
 /// </summary>
-public sealed partial class HistoryPage : Page
+public sealed partial class HistoryPage : UserControl
 {
     public Slipstream.App.Pages.HistoryViewModel ViewModel { get; }
 

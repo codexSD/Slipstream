@@ -15,6 +15,11 @@ public sealed partial class ShellWindow : Window
 {
     public Slipstream.App.Shell.ShellViewModel ViewModel { get; }
 
+    /// <summary>The one live instance of each destination view, keyed by its sidebar label.
+    /// Built once in the constructor and reused, so switching destinations preserves each
+    /// view's state instead of rebuilding it.</summary>
+    private readonly Dictionary<string, UIElement> _destinationViews;
+
     public string PageSubtitle => ViewModel.Selected.Label switch
     {
         "Device" => "This machine, at a glance.",
@@ -54,14 +59,23 @@ public sealed partial class ShellWindow : Window
             }
         };
 
-        // See the DeviceTemplate's ContentPresenter comment: a DataTemplate can't take
-        // constructor arguments, so the one DevicePage instance is built here (where the
-        // injected peerHost is in scope) and hosted by name from the resource dictionary.
-        RootGrid.Resources["DevicePageContent"] = new Pages.DevicePage(peerHost, transferQueue, historyStore);
-        RootGrid.Resources["BrowsePageContent"] = new Pages.BrowsePage(peerHost, transferQueue);
-        RootGrid.Resources["TransfersPageContent"] = new Pages.TransfersPage(transferQueue);
-        RootGrid.Resources["HistoryPageContent"] = new Pages.HistoryPage(historyStore, transferQueue);
-        RootGrid.Resources["SettingsPageContent"] = new Pages.SettingsPage(settingsStore, peerHost);
+        // The five destination views need their dependencies injected at construction, so
+        // they are built here (where those dependencies are in scope) and swapped into
+        // PageHost by name. They must NOT be stashed in a ResourceDictionary and pulled back
+        // out with {StaticResource}: WinUI flags every ResourceDictionary value as shareable,
+        // and assigning such an element to ContentControl.Content throws
+        // ArgumentException/E_INVALIDARG - which is exactly what killed this app during
+        // Window.Activate() before any window ever appeared.
+        _destinationViews = new Dictionary<string, UIElement>
+        {
+            ["Device"] = new Pages.DevicePage(peerHost, transferQueue, historyStore),
+            ["Browse phone"] = new Pages.BrowsePage(peerHost, transferQueue),
+            ["Transfers"] = new Pages.TransfersPage(transferQueue),
+            ["History"] = new Pages.HistoryPage(historyStore, transferQueue),
+            ["Settings"] = new Pages.SettingsPage(settingsStore, peerHost),
+        };
+
+        ShowSelectedDestination();
 
         ExtendsContentIntoTitleBar = true;
         SetTitleBar(AppTitleBar);
@@ -101,5 +115,14 @@ public sealed partial class ShellWindow : Window
     private void NavList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         Bindings.Update();
+        ShowSelectedDestination();
+    }
+
+    /// <summary>Swaps the pre-built view for the selected destination into the content host.</summary>
+    private void ShowSelectedDestination()
+    {
+        PageHost.Content = _destinationViews.TryGetValue(ViewModel.Selected.Label, out var view)
+            ? view
+            : null;
     }
 }

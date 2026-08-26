@@ -8,7 +8,7 @@ namespace Slipstream_App.Pages;
 /// Spec §12's Device page: a 3-up stat row, the screen's one hero metric (the live transfer
 /// rate), and a connection panel naming the winning discovery strategy and elapsed time.
 /// </summary>
-public sealed partial class DevicePage : Page
+public sealed partial class DevicePage : UserControl
 {
     public DeviceViewModel ViewModel { get; }
 

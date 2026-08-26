@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8" ?>
-<Page
+<UserControl
     x:Class="Slipstream_App.Pages.HistoryPage"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
@@ -51,4 +51,4 @@
             </StackPanel>
         </Grid>
     </Grid>
-</Page>
+</UserControl>

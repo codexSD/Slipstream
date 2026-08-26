@@ -17,7 +17,7 @@ namespace Slipstream_App.Pages;
 /// a directories-first data table (with a gallery-view toggle for media-heavy folders), and
 /// the honest truncation banner when the peer capped the listing.
 /// </summary>
-public sealed partial class BrowsePage : Page, INotifyPropertyChanged
+public sealed partial class BrowsePage : UserControl, INotifyPropertyChanged
 {
     private const string RootPath = "/storage";
 

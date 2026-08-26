@@ -47,6 +47,9 @@ android {
 dependencies {
     implementation(project(":meridian-compose"))
     implementation(project(":core"))
+    // :core keeps kotlinx-serialization-json as `implementation` (not `api`), so PeerController
+    // (which parses ControlMessage payloads directly) needs its own copy on the classpath.
+    implementation(libs.kotlinx.serialization.json)
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
@@ -71,4 +74,11 @@ dependencies {
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.compose.ui.test.junit4)
     androidTestImplementation(platform(libs.compose.bom))
+}
+
+tasks.withType<Test> {
+    // Same fix as :core/build.gradle.kts: Conscrypt (transitively pulled in for real TLS control
+    // connections in RealPeerControllerTest) reflectively inspects java.net.InetAddress during
+    // the handshake, which JDK 17's module system blocks unless explicitly opened.
+    jvmArgs("--add-opens=java.base/java.net=ALL-UNNAMED")
 }

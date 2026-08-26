@@ -389,6 +389,144 @@ directly rather than by elapsed time.
 
 ---
 
+---
+
+# Round 4 — closed
+
+> **Outcome.** Pairing could not work on the product's primary topology, and the cause was a
+> **design error in Plan 1b Task 5, not an implementation slip.** `PairingDiscovery` was
+> specified and built to subscribe to `MulticastStrategy` and nothing else. Paired discovery
+> already races four strategies *precisely because multicast is unreliable*; pairing discovery
+> was handed the single strategy that fails on an Android softAP. The code did what the plan
+> said. The plan was wrong.
+>
+> Spec §1 names the phone hotspot as the **primary** scenario: the PC is a DHCP client of the
+> phone's softAP and the phone is the PC's default gateway. Measured on real hardware before
+> the fix — PC's default route `NextHop 10.199.176.137` on Wi-Fi; PC joined `224.0.0.167:53320`
+> and received **nothing in 8 seconds** with the phone app running; `Test-NetConnection
+> 10.199.176.137:53321` succeeded and a raw .NET TLS handshake against it completed in
+> **21–216 ms**. The peer was trivially reachable by gateway probe and completely invisible to
+> multicast.
+
+## Fix 8 — pairing discovery is multicast-only (design error, both platforms)
+
+**Files:** `windows/src/Slipstream.Core/Pairing/PairingDiscovery.cs`,
+`windows/src/Slipstream.Core/Control/ControlClient.cs`, `windows/src/Slipstream.Core/SlipstreamPeer.cs`,
+`android/core/.../pairing/PairingDiscovery.kt`, `android/core/.../pairing/TlsPairingProbe.kt`
+
+**Change.** `PairingDiscovery` now races the same ladder as `DiscoveryCoordinator` — multicast,
+gateway probe, subnet sweep — on **both** platforms. Multicast is kept; it is correct on a normal
+router. The gateway probe is the decisive arm in hotspot mode. The sweep is the backstop, bounded
+to a /24 by the existing `SubnetMath`, which refuses anything wider rather than attempting it.
+
+The **only** difference from paired discovery is the trust filter, and it is deliberate: paired
+discovery requires a fingerprint match; pairing discovery accepts any peer, because the six-digit
+code compared by two humans is what establishes trust (`protocol/pairing.md`). Discovery therefore
+produces a *candidate* — an address plus a TLS-verified fingerprint — and nothing more.
+
+**What was explicitly not weakened.**
+
+- Everything stays gated on the open 120-second `PairingWindow`: checked before the first probe,
+  again per host mid-sweep, and again before any result is returned, with a watcher arm that ends
+  the race the moment the gate shuts. Outside the window nothing probes, nothing listens, and
+  unpaired inbound connections are still dropped before a message is read.
+- Probes connect **unpinned** (`ControlClient.ConnectForPairingAsync` / `TlsPairingProbe`) — there
+  is nothing to pin against yet. `LanGuard` applies to every probe.
+- Mutual six-digit confirmation is untouched. Discovery never pairs and never persists;
+  `PairingCoordinator` still owns that alone.
+- `MulticastStrategy` still has exactly **one** `ReceiveAsync` on its socket. The Windows ladder
+  subscribes to the existing fan-out — the two-concurrent-receives bug that was the Windows core's
+  one shipped Critical is not reintroduced.
+
+Both platforms were changed together. A ladder on one side only means pairing works in one
+direction only.
+
+## Fix 9 — a discovery probe collapsed the responder's pairing window (Android, found on hardware)
+
+**File:** `android/core/src/main/kotlin/com/slipstream/core/SlipstreamPeer.kt`
+
+Found only by driving the fixed ladder against a real phone: the PC found the phone in **419 ms**
+by gateway probe, and then pairing failed, with the phone showing *"Pairing declined."* within a
+second.
+
+The gateway probe finds a peer by completing an unpinned TLS handshake and hanging up — that *is*
+what "found" means when multicast is dead. On the responder, that hang-up ran `PairingCoordinator`
+to a `false` result which was posted straight to the pending outcome queue, so `awaitPairing`
+returned and closed the window **before the initiator's real connection arrived**. The probe
+cancelled the pairing it existed to enable.
+
+An exchange that never put a code in front of the user is not an answer. The outcome is now posted
+only on a successful pairing, or when the user was actually asked — tracked by wrapping the confirm
+callback, so the flag cannot drift from whether the prompt really fired.
+
+This **tightens** the gate. The window still closes on a real outcome, on user cancel, and on its
+own 120-second expiry — and an unpaired stranger who connects and drops can no longer cancel the
+user's attempt, which was a denial of service on pairing in its own right, reachable by anyone able
+to open a socket during the window.
+
+## Verification
+
+| Suite | Result |
+| --- | --- |
+| `dotnet test windows/Slipstream.sln` | **312 Core** (306 + 6 new) + **122 App**, 0 failures |
+| `./gradlew :core:testDebugUnitTest` | **255**, 0 failures (249 + 6 new) |
+| `./gradlew :app:testDebugUnitTest` | **133**, 0 failures |
+| `bash android/scripts/check-meridian-tokens.sh` | passes |
+
+**Tests added** (6 Windows, 6 Android core — the regression test was written first and confirmed
+red against the pre-fix code on both platforms):
+
+- gateway probe finds an unpaired peer when multicast yields nothing (**the hotspot case**)
+- subnet sweep finds one when there is no gateway, bounded to the /24, never probing ourselves
+- multicast still wins when it works, with the full ladder running
+- nothing probes at all while the window is closed — asserted on a recording probe, not inferred
+- the search stops the moment the window closes mid-search
+- a peer found by any strategy is a candidate only; nothing is persisted without mutual confirmation
+- (Android) a discovery probe must not collapse the responder's pairing window — Fix 9's regression
+  test, confirmed red before the fix
+
+## Hardware result — **discovery verified, full pairing NOT verified**
+
+Stated plainly, because the distinction matters.
+
+**Verified on the live hotspot** (PC `10.199.176.38/24`, gateway/phone `10.199.176.137`, phone
+running the rebuilt app), driving the real ladder and the real unpinned probe:
+
+```
+window closed : found=null in 2 ms          <- nothing touched the network
+window open   : found=10.199.176.137:53321
+                fp=a9b8061f...aaafb294 in 197 ms
+connected to  : 10.199.176.137:53321 fp=a9b8061f...aaafb294
+```
+
+Repeated at 419 ms and 197 ms across two runs. Multicast contributed nothing on either. For
+contrast, the unmodified `pair-mode` harness on the same machine found **no peer at all** in the
+full 120 seconds.
+
+**Not verified: the six-digit code exchange.** I did not observe matching codes on both devices, so
+the hotspot row must **not** be marked verified. Two things got in the way, both worth recording:
+
+1. **A separate, pre-existing defect blocks the fix in production on this PC.**
+   `NetworkInfo.Current()` returns the **first** up non-loopback NIC with a LAN-local IPv4. On this
+   machine that is `vEthernet (Default Switch)` — a Hyper-V virtual switch at `192.168.112.1/20`
+   with **no gateway** — not Wi-Fi. So the gateway arm gets `gateway = null` and does nothing, and
+   the sweep gets `/20`, which `SubnetMath` refuses as wider than a /24. The ladder is starved of
+   the correct network before it starts. Verification above was obtained by supplying the real
+   Wi-Fi `LocalNetwork` directly; nothing else was stubbed. **This is unowned and should be the
+   next fix** — it defeats paired discovery on this machine too, and it is not something Fix 8 can
+   route around. `SlipstreamPeer` hard-constructs `new NetworkInfo()`, so it is not injectable
+   either.
+2. The phone went into an active personal call mid-test. Hardware driving was stopped there rather
+   than continuing to send taps to a device in use.
+
+**Confidence:** the discovery half is **verified** — measured end to end against real hardware on
+the real topology, including the window-closed case. The complete pairing handshake over the
+hotspot is **plausible**: every component is exercised green by tests, the unpinned TLS connection
+to the phone was established and its certificate fingerprint verified, and Fix 9 removed the one
+observed reason the exchange died — but no human compared two codes.
+
+---
+
 ## Reporting
 
 Each fix reports separately: what changed, whether tests pass, and — for fixes 1, 3, and 4 —

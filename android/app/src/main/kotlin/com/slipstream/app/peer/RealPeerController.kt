@@ -68,6 +68,11 @@ class RealPeerController(
     private val identity: DeviceIdentity,
     private val peerStore: PairedPeerStore,
     private val clipboardSink: ForwardingClipboardSink,
+    /** Backs [playRequests]. Optional (defaults to a private, never-fed instance) so every
+     * existing caller/test that never heard of push-to-play keeps compiling unchanged - mirrors
+     * [clipboardSink]'s own requiredness only where a real caller ([SlipstreamApplication])
+     * actually needs to observe it. */
+    private val playSink: ForwardingPlaySink = ForwardingPlaySink(),
     private val networkBinder: NetworkBinder = NetworkBinder.NONE,
     private val dispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) : PeerController {
@@ -85,6 +90,7 @@ class RealPeerController(
     override val isPaired: StateFlow<Boolean> = _isPaired.asStateFlow()
 
     override val clipboardReceived: SharedFlow<String> = clipboardSink.received
+    override val playRequests: SharedFlow<PlayRequest> = playSink.received
 
     @Volatile private var connection: ControlConnection? = null
     @Volatile private var peerEndpoint: java.net.InetSocketAddress? = null
@@ -281,18 +287,49 @@ class RealPeerController(
     }
 
     /**
-     * `:core`'s only streaming message is `stream.request`/`stream.ok` (see
-     * `SlipstreamSession.streamRequest`), which resolves [remotePath] against the *responder's*
-     * own root and hands back a URL to stream FROM that responder — there is no wire message
-     * that tells a peer "render this on your own screen". So [streamOnPeer] and [streamUrlFor]
-     * both drive the same exchange against the peer; the difference is purely what the caller
-     * does with the result. [streamOnPeer] is therefore only as good as "the peer confirmed it
-     * can serve that file" — it cannot actually cause remote playback, since `:core`'s protocol
-     * has no such command today. Flagged in the task report as a load-bearing protocol gap the
-     * plan did not anticipate.
+     * Real push-to-play (design.md §8, fixed per Task 11's addendum): [localPath] is a file
+     * *this* device owns, not something to ask the peer to resolve. `:core`'s `stream.request`/
+     * `stream.ok` exchange (`SlipstreamSession.streamRequest`) only ever resolves a path against
+     * the *responder's* own root — sending it to the peer for a file that lives on THIS device
+     * would ask the peer to look for it on itself, which is simply the wrong device. So this
+     * device answers its own "stream request" locally (no socket round trip needed for that
+     * half - see [SlipstreamPeer.mediaTokenVault] and [SlipstreamPeer.mediaEndpoint]), builds a
+     * URL to its own already-running media server exactly as [streamUrlFor] builds one for the
+     * peer's, and sends *one* wire message: `play` carrying that `url` (and `mime`) to the peer -
+     * matching design.md §8 precisely ("Phone requests a stream token for the file [from
+     * itself]. Phone sends `play` [to the PC] with the URL.").
      */
-    override suspend fun streamOnPeer(remotePath: String): Result<Unit> =
-        requestStream(remotePath).map { }
+    override suspend fun streamOnPeer(localPath: String): Result<Unit> = withContext(dispatcher) {
+        try {
+            val file = File(localPath)
+            if (!file.isFile) {
+                return@withContext Result.failure(IllegalStateException("That file is no longer there."))
+            }
+            val endpoint = peer.mediaEndpoint
+                ?: return@withContext Result.failure(IllegalStateException("Not connected"))
+            val mime = com.slipstream.core.files.FileBrowser.mimeFor(file.name)
+            val token = peer.mediaTokenVault.issue(file, mime)
+            val url = "http://${endpoint.address.hostAddress}:${endpoint.port}/media/${token.value}"
+            mutex.withLock {
+                val conn = connection ?: throw IllegalStateException("Not connected")
+                conn.send(
+                    ControlMessage(
+                        type = SessionMessageTypes.PLAY,
+                        id = UUID.randomUUID().toString(),
+                        payload = JsonObject(
+                            mapOf(
+                                "url" to JsonPrimitive(url),
+                                "mime" to JsonPrimitive(mime),
+                            ),
+                        ),
+                    ),
+                )
+            }
+            Result.success(Unit)
+        } catch (e: Exception) {
+            Result.failure(IllegalStateException("Couldn't start playback on the peer."))
+        }
+    }
 
     override suspend fun streamUrlFor(remotePath: String): Result<String> =
         requestStream(remotePath).map { (host, port, token) -> "http://$host:$port/media/$token" }

@@ -35,6 +35,7 @@ private class FakeController(paired: Boolean = true) : PeerController {
     override suspend fun streamUrlFor(remotePath: String) = Result.success("http://example.com")
     override suspend fun sendClipboard(text: String) = Result.success(Unit)
     override val clipboardReceived: kotlinx.coroutines.flow.SharedFlow<String> = MutableSharedFlow()
+    override val playRequests: kotlinx.coroutines.flow.SharedFlow<com.slipstream.app.peer.PlayRequest> = MutableSharedFlow()
     override fun openPairing(): Flow<com.slipstream.app.peer.PairingProgress> = MutableSharedFlow()
     override suspend fun confirmPairing(accept: Boolean) = Unit
     override suspend fun unpair() = Unit

@@ -12,6 +12,7 @@ import com.slipstream.app.peer.PairingProgress
 import com.slipstream.app.peer.PeerConnectionState
 import com.slipstream.app.peer.PeerController
 import com.slipstream.app.peer.PeerStatus
+import com.slipstream.app.peer.PlayRequest
 import com.slipstream.app.peer.SettingsStore
 import com.slipstream.app.peer.TransferProgress
 import com.slipstream.meridian.MeridianTheme
@@ -50,6 +51,7 @@ private class SpyPeerController(paired: Boolean = false) : PeerController {
     override suspend fun streamUrlFor(remotePath: String) = Result.success("http://example.com")
     override suspend fun sendClipboard(text: String) = Result.success(Unit)
     override val clipboardReceived: SharedFlow<String> = MutableSharedFlow()
+    override val playRequests: SharedFlow<PlayRequest> = MutableSharedFlow()
     override fun openPairing(): Flow<PairingProgress> {
         openPairingCalled = true
         return flow { emit(PairingProgress.Completed(true)) }

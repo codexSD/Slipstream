@@ -72,8 +72,14 @@ interface PeerController {
     /** Pushes the local file at [localPath] to the peer, landing at [remoteName] under its root. */
     fun push(localPath: String, remoteName: String): Flow<TransferProgress>
 
-    /** Push-to-play: asks the peer to play [remotePath] itself. */
-    suspend fun streamOnPeer(remotePath: String): Result<Unit>
+    /**
+     * Push-to-play (design.md §8): asks the peer to start playing [localPath], a file *this*
+     * device owns (an absolute path on this device's own filesystem — never resolved against any
+     * root, exactly like [push]'s `localPath`). This device issues itself a stream token, builds
+     * a URL to its own media server, and sends the peer a `play` message carrying that URL — the
+     * peer never touches this device's filesystem, and nothing is downloaded either direction.
+     */
+    suspend fun streamOnPeer(localPath: String): Result<Unit>
 
     /** Asks the peer to serve [remotePath] for playback on *this* device, returning the URL to
      * hand to a local media player. */
@@ -83,6 +89,11 @@ interface PeerController {
 
     /** Text the peer has sent to this device's clipboard. */
     val clipboardReceived: SharedFlow<String>
+
+    /** `play` messages received from the peer (design.md §8, push-to-play in the inbound
+     * direction) — the app-level owner (see `SlipstreamApplication`) collects this and launches
+     * `ACTION_VIEW`. */
+    val playRequests: SharedFlow<PlayRequest>
 
     /** Opens a pairing window against a not-yet-paired peer at a discovered endpoint, emitting
      * the derived code once the handshake happens and completing once the attempt is decided.

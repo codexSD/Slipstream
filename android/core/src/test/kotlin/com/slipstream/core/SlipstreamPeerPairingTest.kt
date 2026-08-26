@@ -91,6 +91,7 @@ class SlipstreamPeerPairingTest {
     private fun peerWithRootAndStore(
         name: String,
         onPlayRequested: (File) -> Unit = {},
+        onPlayUrlRequested: (String, String?) -> Unit = { _, _ -> },
     ): Triple<SlipstreamPeer, File, PairedPeerStore> {
         val dir = createTempDirectory().toFile()
         val networkInfo = LoopbackNetworkInfo()
@@ -106,6 +107,7 @@ class SlipstreamPeerPairingTest {
             bulkPort = 0,
             mediaPort = 0,
             onPlayRequested = onPlayRequested,
+            onPlayUrlRequested = onPlayUrlRequested,
         )
         return Triple(p, dir, store)
     }
@@ -274,6 +276,60 @@ class SlipstreamPeerPairingTest {
         } finally {
             sender.close()
             receiver.close()
+        }
+    }
+
+    @Test
+    fun `sending play with a url over a real connection invokes onPlayUrlRequested, not onPlayRequested`() {
+        val (sender, _, senderStore) = peerWithRootAndStore("Sender")
+        val fileRequests = mutableListOf<File>()
+        val urlRequests = mutableListOf<Pair<String, String?>>()
+        val (receiver, _, _) = peerWithRootAndStore(
+            "Receiver",
+            onPlayRequested = { fileRequests.add(it) },
+            onPlayUrlRequested = { url, mime -> urlRequests.add(url to mime) },
+        )
+        try {
+            pair(sender, receiver)
+
+            ControlClient.connect(requireNotNull(receiver.controlEndpoint), sender.identity, senderStore).use { conn ->
+                conn.send(
+                    ControlMessage(
+                        type = "play",
+                        payload = JsonObject(
+                            mapOf(
+                                "url" to JsonPrimitive("http://192.168.1.5:53323/media/token-1"),
+                                "mime" to JsonPrimitive("video/mp4"),
+                            ),
+                        ),
+                    ),
+                )
+            }
+
+            repeat(50) {
+                if (urlRequests.isNotEmpty()) return@repeat
+                Thread.sleep(20)
+            }
+            assertEquals(listOf("http://192.168.1.5:53323/media/token-1" to "video/mp4"), urlRequests)
+            assertTrue("a url-carrying play must never invoke the path-based callback", fileRequests.isEmpty())
+        } finally {
+            sender.close()
+            receiver.close()
+        }
+    }
+
+    @Test
+    fun `mediaEndpoint reflects the peer's own bound media server once started, and is null before start`() {
+        val (peer, _) = peerWithRoot("Solo")
+        assertNull("mediaEndpoint must be null before start()", peer.mediaEndpoint)
+        try {
+            peer.start()
+            val endpoint = peer.mediaEndpoint
+            assertNotNull("mediaEndpoint must be populated once the media server is up", endpoint)
+            assertEquals(LOOPBACK, endpoint!!.address)
+            assertTrue("mediaEndpoint's port must be the real bound port, not the requested 0", endpoint.port > 0)
+        } finally {
+            peer.close()
         }
     }
 

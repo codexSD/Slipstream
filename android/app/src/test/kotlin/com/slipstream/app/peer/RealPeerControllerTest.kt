@@ -141,6 +141,64 @@ class RealPeerControllerTest {
     }
 
     @Test
+    fun `streamOnPeer sends the peer a play message carrying this device's own media url, and downloads nothing`() = runBlocking {
+        val urlRequests = mutableListOf<Pair<String, String?>>()
+        val rig = TwoPeers.start(
+            createTempDirectory().toFile(),
+            onPlayUrlRequested = { url, mime -> urlRequests.add(url to mime) },
+        )
+        val controller = controller(rig)
+        try {
+            withTimeout(20_000) { controller.start() }
+
+            val localDir = createTempDirectory().toFile()
+            val localVideo = File(localDir, "holiday.mp4")
+            localVideo.writeBytes(ByteArray(64))
+
+            val result = withTimeout(20_000) { controller.streamOnPeer(localVideo.path) }
+
+            assertTrue("streamOnPeer must report success: ${result.exceptionOrNull()}", result.isSuccess)
+            repeat(50) {
+                if (urlRequests.isNotEmpty()) return@repeat
+                Thread.sleep(20)
+            }
+            assertEquals(1, urlRequests.size)
+            val (url, mime) = urlRequests.single()
+            assertEquals("video/mp4", mime)
+            // The URL must describe THIS device's (rig.local's) own media server, not the peer's -
+            // real push-to-play serves the file from wherever it actually lives.
+            val localMediaEndpoint = requireNotNull(rig.local.mediaEndpoint)
+            assertTrue(
+                "the play url must point at this device's own media port ${localMediaEndpoint.port}, not the peer's: $url",
+                url.startsWith("http://127.0.0.1:${localMediaEndpoint.port}/media/"),
+            )
+            // Nothing was ever transferred: the file stays exactly where it was, and no copy
+            // landed under the peer's root.
+            assertTrue(localVideo.exists())
+            assertEquals(64L, localVideo.length())
+        } finally {
+            rig.local.close()
+            rig.remote.close()
+        }
+    }
+
+    @Test
+    fun `streamOnPeer fails cleanly when the local file does not exist`() = runBlocking {
+        val rig = TwoPeers.start(createTempDirectory().toFile())
+        val controller = controller(rig)
+        try {
+            withTimeout(20_000) { controller.start() }
+
+            val result = controller.streamOnPeer("/no/such/file.mp4")
+
+            assertTrue(result.isFailure)
+        } finally {
+            rig.local.close()
+            rig.remote.close()
+        }
+    }
+
+    @Test
     fun clipboardReceived_delivers_text_sent_by_the_peer() = runBlocking {
         val rig = TwoPeers.start(createTempDirectory().toFile())
         val controller = controller(rig)

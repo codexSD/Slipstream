@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -19,10 +20,13 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
@@ -31,10 +35,18 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.media3.common.MediaItem
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.ui.PlayerView
 import com.slipstream.app.peer.PeerController
 import com.slipstream.meridian.MeridianRadius
 import com.slipstream.meridian.MeridianSpacing
@@ -72,6 +84,20 @@ fun BrowseScreen(
             BreadcrumbRow(
                 breadcrumbs = state.breadcrumbs,
                 onClick = { crumb -> scope.launch { viewModel.navigateTo(crumb) } },
+            )
+        }
+
+        val playbackError = state.playbackError
+        if (playbackError != null) {
+            Text(
+                text = playbackError,
+                style = MeridianText.label,
+                color = MeridianTheme.colors.critical,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { viewModel.dismissPlayback() }
+                    .padding(horizontal = MeridianSpacing.md, vertical = MeridianSpacing.xs)
+                    .testTag("browse-playback-error"),
             )
         }
 
@@ -125,9 +151,65 @@ fun BrowseScreen(
                                     scope.launch { viewModel.open(entry) }
                                 }
                             },
+                            onPlayOnPeer = {
+                                scope.launch { viewModel.playOnPeer(currentFilePath(state.currentPath, entry)) }
+                            },
+                            onPlayHere = {
+                                scope.launch { viewModel.playHere(currentFilePath(state.currentPath, entry)) }
+                            },
                         )
                     }
                 }
+            }
+        }
+    }
+
+    val playbackUrl = state.playbackUrl
+    if (playbackUrl != null) {
+        VideoPlayerDialog(url = playbackUrl, onDismiss = { viewModel.dismissPlayback() })
+    }
+}
+
+/** Joins [currentPath] and [entry]'s name into the full path [BrowseViewModel.playOnPeer]/
+ * [BrowseViewModel.playHere] expect — the same join [BrowseViewModel.open] already does for
+ * directories. */
+private fun currentFilePath(currentPath: String, entry: BrowseEntry): String {
+    val base = currentPath.trimEnd('/')
+    return "$base/${entry.name}"
+}
+
+/** "Play here" (design.md §8): a full-screen Media3 player for [url], closed by [onDismiss].
+ * Owns exactly one [ExoPlayer] for the dialog's lifetime, released the moment it leaves
+ * composition — never left running once the user backs out. */
+@Composable
+private fun VideoPlayerDialog(url: String, onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    val exoPlayer = remember(url) {
+        ExoPlayer.Builder(context).build().apply {
+            setMediaItem(MediaItem.fromUri(url))
+            prepare()
+            playWhenReady = true
+        }
+    }
+    DisposableEffect(exoPlayer) {
+        onDispose { exoPlayer.release() }
+    }
+
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+            AndroidView(
+                factory = { ctx -> PlayerView(ctx).apply { player = exoPlayer } },
+                modifier = Modifier.fillMaxSize(),
+            )
+            IconButton(
+                onClick = onDismiss,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(MeridianSpacing.sm)
+                    .size(44.dp)
+                    .testTag("browse-player-close"),
+            ) {
+                Icon(imageVector = Icons.Filled.Close, contentDescription = "Close player", tint = Color.White)
             }
         }
     }
@@ -162,15 +244,60 @@ private fun BreadcrumbRow(breadcrumbs: List<Breadcrumb>, onClick: (Breadcrumb) -
     }
 }
 
+/** True for any file entry Media3/the system player can plausibly open - the two categories
+ * push-to-play and local playback exist for (design.md §8). Directories are never playable. */
+private fun BrowseEntry.isPlayableMedia(): Boolean =
+    !isDirectory && (mime?.startsWith("video/") == true || mime?.startsWith("audio/") == true)
+
 @Composable
-private fun BrowseRow(entry: BrowseEntry, onClick: () -> Unit) {
-    MeridianListRow(
-        title = entry.name,
-        meta = rowMeta(entry),
-        leading = { BrowseThumbnail(entry) },
-        onClick = onClick,
-        modifier = Modifier.testTag("browse-row-${entry.name}"),
-    )
+private fun BrowseRow(
+    entry: BrowseEntry,
+    onClick: () -> Unit,
+    onPlayOnPeer: () -> Unit = {},
+    onPlayHere: () -> Unit = {},
+) {
+    Column {
+        MeridianListRow(
+            title = entry.name,
+            meta = rowMeta(entry),
+            leading = { BrowseThumbnail(entry) },
+            onClick = onClick,
+            modifier = Modifier.testTag("browse-row-${entry.name}"),
+        )
+        if (entry.isPlayableMedia()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = MeridianSpacing.md, bottom = MeridianSpacing.xs),
+                horizontalArrangement = Arrangement.spacedBy(MeridianSpacing.md),
+            ) {
+                PlaybackActionButton(
+                    label = "Play on PC",
+                    onClick = onPlayOnPeer,
+                    modifier = Modifier.testTag("browse-play-on-peer-${entry.name}"),
+                )
+                PlaybackActionButton(
+                    label = "Play here",
+                    onClick = onPlayHere,
+                    modifier = Modifier.testTag("browse-play-here-${entry.name}"),
+                )
+            }
+        }
+    }
+}
+
+/** A text-only action, sized to a full 44dp tap target (spec's minimum) even though its visible
+ * label is much smaller — the whole row height counts, not just the glyph. */
+@Composable
+private fun PlaybackActionButton(label: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    Row(
+        modifier = modifier
+            .heightIn(min = 44.dp)
+            .clickable(onClick = onClick),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(text = label, style = MeridianText.label, color = MeridianTheme.colors.brand)
+    }
 }
 
 private fun rowMeta(entry: BrowseEntry): String? {

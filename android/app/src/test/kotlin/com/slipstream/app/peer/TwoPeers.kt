@@ -95,7 +95,13 @@ class TwoPeers private constructor(
     }
 
     companion object {
-        fun start(tempDir: File): TwoPeers {
+        fun start(
+            tempDir: File,
+            /** Lets a test observe an inbound `play` (push-to-play, design.md §8) landing on
+             * [remote] without needing a whole second [RealPeerController] wrapping it - see
+             * `RealPeerControllerTest`'s `streamOnPeer` tests. */
+            onPlayUrlRequested: (url: String, mime: String?) -> Unit = { _, _ -> },
+        ): TwoPeers {
             val localDir = File(tempDir, "local").apply { mkdirs() }
             val remoteDir = File(tempDir, "remote").apply { mkdirs() }
             val networkInfo = LoopbackNetworkInfo()
@@ -117,6 +123,7 @@ class TwoPeers private constructor(
                 controlPort = remotePorts.first,
                 bulkPort = remotePorts.second,
                 mediaPort = remotePorts.third,
+                onPlayUrlRequested = onPlayUrlRequested,
             )
             remotePeer.start()
 

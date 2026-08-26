@@ -47,6 +47,14 @@ internal class PeerWiring(
     private val endpointCache: EndpointCache,
     private val rootDirectory: File,
     private val clipboardSink: ClipboardSink,
+    /** Fired for an inbound `play` carrying a `path` field - see
+     * [com.slipstream.core.control.SlipstreamSession]'s doc on the two `play` callbacks. Defaults
+     * to a no-op so every existing caller/test that never heard of push-to-play keeps compiling
+     * unchanged, same pattern as [clipboardSink]'s own default elsewhere in this file. */
+    private val onPlayRequested: (File) -> Unit = {},
+    /** Fired for an inbound `play` carrying a `url` field - the shape real push-to-play
+     * (design.md §8) actually uses. See [onPlayRequested]'s doc for why both exist. */
+    private val onPlayUrlRequested: (url: String, mime: String?) -> Unit = { _, _ -> },
     /** The one binder instance shared by the peer and by everything discovery constructs. */
     val networkBinder: MutableNetworkBinder = MutableNetworkBinder(),
     /** Seam over [PinnedTls.connect], so a test can observe which binder the probe passes it
@@ -129,5 +137,7 @@ internal class PeerWiring(
         // Spec §5: the phone must answer a PC's query while it is merely running, not only
         // while it is itself discovering.
         discoveryResponder = multicastStrategy,
+        onPlayRequested = onPlayRequested,
+        onPlayUrlRequested = onPlayUrlRequested,
     )
 }

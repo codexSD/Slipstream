@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Task 11: grants the FileProvider declared in AndroidManifest.xml read access to exactly the
+     directories Slipstream ever plays a file out of. rootDirectory (PeerWiring/SlipstreamApplication)
+     is getExternalFilesDir(null) in production, falling back to filesDir only when external
+     storage is unavailable - both are covered so push-to-play never depends on which one a given
+     device landed on. -->
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <external-files-path name="external_root" path="." />
+    <files-path name="internal_root" path="." />
+</paths>

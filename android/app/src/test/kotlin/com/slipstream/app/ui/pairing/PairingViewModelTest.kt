@@ -5,6 +5,7 @@ import com.slipstream.app.peer.PairingProgress
 import com.slipstream.app.peer.PeerController
 import com.slipstream.app.peer.PeerConnectionState
 import com.slipstream.app.peer.PeerStatus
+import com.slipstream.app.peer.PlayRequest
 import com.slipstream.app.peer.TransferProgress
 import java.io.File
 import kotlin.time.Duration.Companion.seconds
@@ -58,6 +59,7 @@ private class FakeController : PeerController {
     override suspend fun sendClipboard(text: String): Result<Unit> = Result.success(Unit)
 
     override val clipboardReceived: SharedFlow<String> = MutableSharedFlow()
+    override val playRequests: SharedFlow<PlayRequest> = MutableSharedFlow()
 
     override fun openPairing(): Flow<PairingProgress> = emptyFlow()
 

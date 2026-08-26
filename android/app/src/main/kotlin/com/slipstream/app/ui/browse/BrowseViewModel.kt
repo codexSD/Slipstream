@@ -63,6 +63,12 @@ data class BrowseState(
     /** Set only when the peer's listing was capped (design.md's directory-entry cap) — an
      * honest "this isn't everything" notice rather than silently pretending it's complete. */
     val truncationNotice: String? = null,
+    /** Set once [BrowseViewModel.playHere] has a URL to hand a local player — the screen shows
+     * a Media3 player for exactly as long as this is non-null (design.md §8, "Play here"). */
+    val playbackUrl: String? = null,
+    /** Set when either [BrowseViewModel.playOnPeer] or [BrowseViewModel.playHere] failed — the
+     * direct, no-apology message (spec §15), never a stack trace. */
+    val playbackError: String? = null,
 )
 
 /**
@@ -145,6 +151,45 @@ class BrowseViewModel(
             filter = filter,
             entries = applyFilter(_state.value.allEntries, filter),
         )
+    }
+
+    /**
+     * "Play on PC" (design.md §8, push-to-play): [localPath] is a file on *this* device (an
+     * absolute path, never resolved against any root — see [PeerController.streamOnPeer]'s
+     * doc). Delegates entirely to the controller, which issues this device's own stream token
+     * and sends the peer a single `play` message carrying a URL to this device's own media
+     * server — nothing is ever copied to the peer.
+     */
+    suspend fun playOnPeer(localPath: String) {
+        val result = controller.streamOnPeer(localPath)
+        result.fold(
+            onSuccess = {
+                _state.value = _state.value.copy(playbackError = null)
+            },
+            onFailure = { error ->
+                _state.value = _state.value.copy(playbackError = error.message ?: "Couldn't start playback.")
+            },
+        )
+    }
+
+    /** "Play here" (design.md §8): [remotePath] is a file on the peer. Fetches a
+     * `/media/{token}` URL to hand to a local Media3 player — never downloads the file. */
+    suspend fun playHere(remotePath: String) {
+        val result = controller.streamUrlFor(remotePath)
+        result.fold(
+            onSuccess = { url -> _state.value = _state.value.copy(playbackUrl = url, playbackError = null) },
+            onFailure = { error ->
+                _state.value = _state.value.copy(
+                    playbackUrl = null,
+                    playbackError = error.message ?: "Couldn't start playback.",
+                )
+            },
+        )
+    }
+
+    /** Closes the local player (or clears a playback error banner) shown for [playHere]. */
+    fun dismissPlayback() {
+        _state.value = _state.value.copy(playbackUrl = null, playbackError = null)
     }
 
     private fun applyFilter(entries: List<BrowseEntry>, filter: BrowseFilter): List<BrowseEntry> =

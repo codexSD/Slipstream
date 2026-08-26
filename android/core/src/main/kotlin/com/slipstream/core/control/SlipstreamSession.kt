@@ -85,10 +85,28 @@ class SlipstreamSession(
         size: Long,
         destination: File,
     ) -> Unit = { _, _, _, _, _ -> },
-    /** Fired for an inbound `play` (design.md §8, push-to-play): the peer wants this device to
-     * start playing a file it is serving. Pure forwarding callback, same discipline as
-     * [onBulkIssued]/[onPushOffered] - dispatch never itself launches playback UI. */
+    /** Fired for an inbound `play` (design.md §8, push-to-play) whose payload carries a `path`
+     * field: the peer wants this device to start playing a file *this device already owns*,
+     * resolved against [rootDirectory] exactly like `list`/`stat`/`pull.request`. Pure forwarding
+     * callback, same discipline as [onBulkIssued]/[onPushOffered] - dispatch never itself
+     * launches playback UI.
+     *
+     * Kept exactly as Task 2.5 built it (including this doc's original path-based framing) for
+     * backward compatibility with its existing tests. Task 11's addendum found this shape alone
+     * cannot implement design.md §8's actual push-to-play flow ("phone picks a file, PC starts
+     * playing it"): the file being played there is owned by the *sender*, not resolvable against
+     * *this* device's own root at all. [onPlayUrlRequested] is the shape real push-to-play
+     * actually uses; this one is preserved as a fallback for a `play` message that only ever
+     * carries `path` (e.g. an older peer, or a future same-device-owns-it use of `play`). */
     private val onPlayRequested: (file: File) -> Unit = {},
+    /** Fired for an inbound `play` whose payload carries a `url` field instead of `path`: the
+     * peer (the file's owner) has already issued itself a stream token and is handing this
+     * device a ready-to-open URL to *its own* media server, per design.md §8's actual push-to-play
+     * flow ("Phone requests a stream token for the file [from itself]. Phone sends `play` [to the
+     * PC] with the URL."). [mime] is whatever the sender's own `stream.request` resolved the
+     * file's MIME type to; null only if the sender's message omitted it. Preferred over
+     * [onPlayRequested] whenever both a `url` and a `path` are (implausibly) present. */
+    private val onPlayUrlRequested: (url: String, mime: String?) -> Unit = { _, _ -> },
 ) {
     fun dispatch(message: ControlMessage): ControlMessage? = when (message.type) {
         SessionMessageTypes.HELLO -> helloOk(message)
@@ -303,7 +321,14 @@ class SlipstreamSession(
      * reply, and an unresolvable path is silently dropped rather than answered with an error -
      * this is a fire-and-forget UX message, not a request. */
     private fun play(message: ControlMessage): ControlMessage? {
-        val path = message.payload?.get("path")?.jsonPrimitive?.contentOrNull ?: return null
+        val payload = message.payload ?: return null
+        val url = payload["url"]?.jsonPrimitive?.contentOrNull
+        if (url != null) {
+            val mime = payload["mime"]?.jsonPrimitive?.contentOrNull
+            onPlayUrlRequested(url, mime)
+            return null
+        }
+        val path = payload["path"]?.jsonPrimitive?.contentOrNull ?: return null
         val file = resolvePath(path) ?: return null
         if (!file.exists()) return null
         onPlayRequested(file)

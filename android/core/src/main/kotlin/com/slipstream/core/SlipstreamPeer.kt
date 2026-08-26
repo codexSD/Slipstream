@@ -104,10 +104,17 @@ class SlipstreamPeer(
     private val onTeardown: () -> Unit = {},
     private val onRediscover: (DiscoveryResult?) -> Unit = {},
     private val onResumeAttempt: (UUID) -> Unit = {},
-    /** Fired when a paired peer sends `play` (design.md §8, push-to-play): this device is asked
-     * to start playing a file it is serving. [SlipstreamPeer] only forwards - the app-level owner
-     * decides what "play" means (e.g. launching `ACTION_VIEW`). */
+    /** Fired when a paired peer sends `play` with a `path` field (design.md §8, push-to-play,
+     * legacy/path-based shape - see [com.slipstream.core.control.SlipstreamSession]'s doc on the
+     * two `play` callbacks): this device is asked to start playing a file resolved against its
+     * own root. [SlipstreamPeer] only forwards - the app-level owner decides what "play" means
+     * (e.g. launching `ACTION_VIEW`). */
     private val onPlayRequested: (File) -> Unit = {},
+    /** Fired when a paired peer sends `play` with a `url` field: the real push-to-play shape
+     * (design.md §8) - the peer already owns the file, already issued itself a stream token, and
+     * is handing this device a ready-to-open URL to *its own* media server. [mime] mirrors
+     * whatever the sender's `stream.request` resolved, if it sent one. */
+    private val onPlayUrlRequested: (url: String, mime: String?) -> Unit = { _, _ -> },
 ) : AutoCloseable {
 
     val bulkTokenVault = TokenVault()
@@ -176,6 +183,19 @@ class SlipstreamPeer(
     val controlEndpoint: InetSocketAddress?
         get() = controlServer?.listenEndpoint
 
+    /** This device's own currently-bound media server address, or null if it isn't running (not
+     * yet [start]-ed, or the active network just went away). Needed for real push-to-play
+     * (design.md §8): to hand a peer a URL for a file *this* device owns, this device must be
+     * able to describe its own address - unlike [com.slipstream.core.control.SlipstreamSession.streamRequest],
+     * which only ever describes the *responder's* address back to a remote asker over the wire,
+     * this is a same-process read with no round trip. */
+    val mediaEndpoint: InetSocketAddress?
+        get() {
+            val server = mediaServer ?: return null
+            val local = networkInfo.current() ?: return null
+            return InetSocketAddress(local.localAddress, server.boundPort)
+        }
+
     private fun startServers() {
         // Spec §11 layer 1: every listening socket binds to this network's own address, never
         // the wildcard. ControlServer derives it itself (and throws if there is none); the bulk
@@ -230,6 +250,7 @@ class SlipstreamPeer(
             handlePushOffered(transferId, token, endpoint, size, destination)
         },
         onPlayRequested = onPlayRequested,
+        onPlayUrlRequested = onPlayUrlRequested,
     )
 
     // --- push (device-initiated send) ---

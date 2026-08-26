@@ -5,6 +5,7 @@ import com.slipstream.app.peer.PairingProgress
 import com.slipstream.app.peer.PeerConnectionState
 import com.slipstream.app.peer.PeerController
 import com.slipstream.app.peer.PeerStatus
+import com.slipstream.app.peer.PlayRequest
 import com.slipstream.app.peer.TransferProgress
 import com.slipstream.core.files.FileEntry
 import com.slipstream.meridian.component.MeridianUiState
@@ -32,9 +33,23 @@ private class FakeController(
     private val failure: Throwable? = null,
     /** Lets a test observe the Loading state before [list] resolves. */
     private val gate: CompletableDeferred<Unit>? = null,
+    private val streamOnPeerFailure: Throwable? = null,
+    private val streamUrlForResult: Result<String> = Result.success("http://192.168.1.5:53324/media/tok-1"),
 ) : PeerController {
     override val status: StateFlow<PeerStatus> = MutableStateFlow(PeerStatus(PeerConnectionState.Connected))
     override val isPaired: StateFlow<Boolean> = MutableStateFlow(true)
+
+    /** Every wire message type this fake's [streamOnPeer] "sent", in order - lets a test verify
+     * [BrowseViewModel.playOnPeer] drives the real push-to-play sequence (design.md §8: this
+     * device issues itself a stream token, then sends the peer one `play`) without needing a
+     * real socket. See [RealPeerControllerTest] (a different module) for the wire-level proof
+     * that the *production* [com.slipstream.app.peer.RealPeerController.streamOnPeer]
+     * really emits both, in order, over a real connection. */
+    val sentTypes = mutableListOf<String>()
+
+    /** Any call to [pull]/[push] would append here - stays empty for a correct "Play on PC",
+     * which per spec §8 must never copy the file anywhere. */
+    val downloads = mutableListOf<String>()
 
     override suspend fun start() = Unit
     override suspend fun reconnect(): Boolean = true
@@ -47,12 +62,27 @@ private class FakeController(
 
     override fun thumbnailUrl(token: String): String? = "http://192.168.1.5:53323/thumb/$token"
 
-    override fun pull(remotePath: String, destination: File): Flow<TransferProgress> = MutableSharedFlow()
-    override fun push(localPath: String, remoteName: String): Flow<TransferProgress> = MutableSharedFlow()
-    override suspend fun streamOnPeer(remotePath: String) = Result.success(Unit)
-    override suspend fun streamUrlFor(remotePath: String) = Result.success("http://example.com")
+    override fun pull(remotePath: String, destination: File): Flow<TransferProgress> {
+        downloads.add(remotePath)
+        return MutableSharedFlow()
+    }
+
+    override fun push(localPath: String, remoteName: String): Flow<TransferProgress> {
+        downloads.add(localPath)
+        return MutableSharedFlow()
+    }
+
+    override suspend fun streamOnPeer(localPath: String): Result<Unit> {
+        sentTypes.add("stream.request")
+        streamOnPeerFailure?.let { return Result.failure(it) }
+        sentTypes.add("play")
+        return Result.success(Unit)
+    }
+
+    override suspend fun streamUrlFor(remotePath: String) = streamUrlForResult
     override suspend fun sendClipboard(text: String) = Result.success(Unit)
     override val clipboardReceived: SharedFlow<String> = MutableSharedFlow()
+    override val playRequests: SharedFlow<PlayRequest> = MutableSharedFlow()
     override fun openPairing(): Flow<PairingProgress> = MutableSharedFlow()
     override suspend fun confirmPairing(accept: Boolean) = Unit
     override suspend fun unpair() = Unit
@@ -202,5 +232,64 @@ class BrowseViewModelTest {
         gate.complete(Unit)
         job.await()
         assertTrue(vm.state.value.uiState is MeridianUiState.Content)
+    }
+
+    // --- Task 11: push-to-play and local playback ---
+
+    @Test
+    fun `play on PC sends stream request then play, and does not download`() = runTest {
+        val controller = FakeController()
+        val vm = BrowseViewModel(controller)
+
+        vm.playOnPeer("/DCIM/holiday.mp4")
+
+        assertEquals(listOf("stream.request", "play"), controller.sentTypes)
+        assertTrue(controller.downloads.isEmpty())
+    }
+
+    @Test
+    fun `a failed playOnPeer surfaces a message rather than throwing`() = runTest {
+        val controller = FakeController(streamOnPeerFailure = IllegalStateException("Not connected"))
+        val vm = BrowseViewModel(controller)
+
+        vm.playOnPeer("/DCIM/holiday.mp4")
+
+        assertEquals("Not connected", vm.state.value.playbackError)
+        assertNull(vm.state.value.playbackUrl)
+    }
+
+    @Test
+    fun `play here fetches the peer's stream url and stores it for the player to open`() = runTest {
+        val controller = FakeController(streamUrlForResult = Result.success("http://192.168.1.5:53324/media/tok-9"))
+        val vm = BrowseViewModel(controller)
+
+        vm.playHere("/DCIM/holiday.mp4")
+
+        assertEquals("http://192.168.1.5:53324/media/tok-9", vm.state.value.playbackUrl)
+        assertTrue(controller.downloads.isEmpty())
+    }
+
+    @Test
+    fun `a failed playHere surfaces a message instead of a url`() = runTest {
+        val controller = FakeController(streamUrlForResult = Result.failure(IllegalStateException("The peer refused to stream that file.")))
+        val vm = BrowseViewModel(controller)
+
+        vm.playHere("/DCIM/holiday.mp4")
+
+        assertNull(vm.state.value.playbackUrl)
+        assertEquals("The peer refused to stream that file.", vm.state.value.playbackError)
+    }
+
+    @Test
+    fun `dismissPlayback clears both the url and any error`() = runTest {
+        val controller = FakeController(streamUrlForResult = Result.success("http://192.168.1.5:53324/media/tok-9"))
+        val vm = BrowseViewModel(controller)
+        vm.playHere("/DCIM/holiday.mp4")
+        assertEquals("http://192.168.1.5:53324/media/tok-9", vm.state.value.playbackUrl)
+
+        vm.dismissPlayback()
+
+        assertNull(vm.state.value.playbackUrl)
+        assertNull(vm.state.value.playbackError)
     }
 }

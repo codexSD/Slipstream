@@ -6,6 +6,7 @@ import com.slipstream.app.peer.PairingProgress
 import com.slipstream.app.peer.PeerConnectionState
 import com.slipstream.app.peer.PeerController
 import com.slipstream.app.peer.PeerStatus
+import com.slipstream.app.peer.PlayRequest
 import com.slipstream.app.peer.TransferProgress
 import java.io.File
 import kotlinx.coroutines.flow.Flow
@@ -51,6 +52,7 @@ private class FakeController(
     override suspend fun streamUrlFor(remotePath: String) = Result.success("http://example.com")
     override suspend fun sendClipboard(text: String) = Result.success(Unit)
     override val clipboardReceived: SharedFlow<String> = MutableSharedFlow()
+    override val playRequests: SharedFlow<PlayRequest> = MutableSharedFlow()
     override fun openPairing(): Flow<PairingProgress> = MutableSharedFlow()
     override suspend fun confirmPairing(accept: Boolean) = Unit
     override suspend fun unpair() = Unit

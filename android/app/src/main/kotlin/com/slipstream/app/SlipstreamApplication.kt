@@ -4,18 +4,24 @@ import android.app.Application
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import android.net.wifi.WifiManager
 import android.os.Build
+import androidx.core.content.FileProvider
 import com.slipstream.core.SlipstreamPeer
 import com.slipstream.core.discovery.AndroidMulticastLock
 import com.slipstream.core.discovery.EndpointCache
 import com.slipstream.core.discovery.MulticastLockHandle
 import com.slipstream.core.discovery.NoopMulticastLock
+import com.slipstream.core.files.FileBrowser
 import com.slipstream.core.identity.DeviceIdentity
 import com.slipstream.core.identity.PairedPeerStore
 import com.slipstream.core.net.AndroidNetworkInfo
 import com.slipstream.app.peer.ForwardingClipboardSink
+import com.slipstream.app.peer.ForwardingPlaySink
 import com.slipstream.app.peer.PeerController
+import com.slipstream.app.peer.PlayRequest
 import com.slipstream.app.peer.RealPeerController
 import com.slipstream.app.peer.SettingsStore
 import com.slipstream.app.peer.TransferQueue
@@ -42,6 +48,14 @@ class SlipstreamApplication : Application() {
      * incoming text into the system clipboard, preserving the previous direct-write behaviour. */
     private val clipboardSink = ForwardingClipboardSink()
 
+    /** The forwarding half of the push-to-play bridge (Task 11), same role as [clipboardSink]
+     * but for inbound `play` messages — see [ForwardingPlaySink]'s doc. [onCreate] collects it
+     * and launches `ACTION_VIEW`. Internal (rather than private) so a test can emit a
+     * [PlayRequest] directly and observe [launchPlayback]'s resulting `Intent`, the same
+     * precedent [buildWiring] already sets for testing this class's Android-specific wiring
+     * without a full end-to-end peer. */
+    internal val playSink = ForwardingPlaySink()
+
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     /** Built once and shared by [peer] and [peerController] so they agree on identity, peer
@@ -59,6 +73,7 @@ class SlipstreamApplication : Application() {
             identity = wiring.identity,
             peerStore = wiring.peerStore,
             clipboardSink = clipboardSink,
+            playSink = playSink,
         )
     }
 
@@ -81,6 +96,42 @@ class SlipstreamApplication : Application() {
                 clipboard.setPrimaryClip(ClipData.newPlainText("Slipstream", text))
             }
         }
+        appScope.launch {
+            playSink.received.collect { request -> launchPlayback(request) }
+        }
+    }
+
+    /**
+     * Task 11 (design.md §8, push-to-play, inbound direction): opens the system default player
+     * via `ACTION_VIEW` for a `play` message the peer just sent. Runs outside any `Activity`
+     * context (this is an [Application]-scoped collector, same as the clipboard one above), so
+     * [Intent.FLAG_ACTIVITY_NEW_TASK] is required.
+     *
+     * [PlayRequest.LocalFile] needs a `content://` URI rather than a bare `file://` one — Android
+     * has refused `file://` URIs handed to another app (`FileUriExposedException`) since API 24 -
+     * so it goes through the [FileProvider] declared in the manifest, granting the resolved
+     * player app read access for exactly this one URI.
+     */
+    private fun launchPlayback(request: PlayRequest) {
+        val (uri, mime) = when (request) {
+            is PlayRequest.LocalFile -> {
+                val authority = "$packageName.fileprovider"
+                FileProvider.getUriForFile(this, authority, request.file) to request.mime
+            }
+            is PlayRequest.RemoteUrl -> Uri.parse(request.url) to request.mime
+        }
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, mime)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        try {
+            startActivity(intent)
+        } catch (e: android.content.ActivityNotFoundException) {
+            // No app on this device can open the file/URL - nothing more this collector can do;
+            // silently dropping mirrors clipboard's own "over the cap? drop it" discipline for a
+            // fire-and-forget inbound event with no reply channel back to the peer.
+        }
     }
 
     /** Internal (rather than folded into [peer]) so a test can assert what the *production*
@@ -96,6 +147,8 @@ class SlipstreamApplication : Application() {
             endpointCache = EndpointCache(storageDir),
             rootDirectory = getExternalFilesDir(null) ?: filesDir,
             clipboardSink = clipboardSink,
+            onPlayRequested = { file -> playSink.onLocalFile(file, FileBrowser.mimeFor(file.name)) },
+            onPlayUrlRequested = { url, mime -> playSink.onRemoteUrl(url, mime ?: "video/*") },
             multicastLock = androidMulticastLock(),
         )
     }

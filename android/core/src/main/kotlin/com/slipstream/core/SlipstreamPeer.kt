@@ -447,8 +447,19 @@ class SlipstreamPeer(
     // --- pairing (pairing.md §1-§3) ---
 
     /** One in-progress [openPairingWindow] call, waiting for a stranger to connect. */
-    private class PendingPairing(val confirmCode: (String) -> Boolean) {
+    private class PendingPairing(onConfirm: (String) -> Boolean) {
         val outcome = ArrayBlockingQueue<Boolean>(1)
+
+        /** True once the exchange got far enough to put a code in front of the user. Only then
+         * is a failure an actual *answer* rather than a connection that went nowhere. */
+        @Volatile
+        var userWasAsked: Boolean = false
+            private set
+
+        val confirmCode: (String) -> Boolean = { code ->
+            userWasAsked = true
+            onConfirm(code)
+        }
     }
 
     @Volatile
@@ -553,7 +564,13 @@ class SlipstreamPeer(
             } finally {
                 conn.close()
             }
-            pending.outcome.offer(paired)
+            // A connection that ended before the user was ever shown a code is not an
+            // answer, and must not collapse the window. Pairing discovery probes connect
+            // over unpinned TLS and hang up immediately - that is how a peer is found at
+            // all on a network that drops multicast - and a stranger who drops mid-exchange
+            // must not be able to cancel the user's attempt either. The window still closes
+            // on a real outcome, on user cancel, and on its own 120-second timeout.
+            if (paired || pending.userWasAsked) pending.outcome.offer(paired)
         }
     }
 

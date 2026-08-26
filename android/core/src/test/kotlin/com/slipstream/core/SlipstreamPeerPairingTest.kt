@@ -394,6 +394,68 @@ class SlipstreamPeerPairingTest {
     }
 
     @Test
+    fun `a discovery probe must not collapse the responder's pairing window`() {
+        // The regression that stopped real hotspot pairing dead. Pairing discovery finds a
+        // peer by connecting over unpinned TLS and hanging up - that is the whole gateway
+        // probe - and the responder treated that hang-up as the user declining, closing its
+        // window before the initiator's real connection ever arrived. A connection that never
+        // put a code in front of the user is not an answer.
+        val phone = peer("Phone")
+        val pc = peer("PC")
+        try {
+            phone.start()
+            pc.start()
+
+            val phoneAsked = AtomicInteger(0)
+            val phoneResult = AtomicReference<com.slipstream.core.identity.PairedPeer?>(null)
+            val phoneDone = CountDownLatch(1)
+
+            thread(isDaemon = true) {
+                phoneResult.set(
+                    phone.awaitPairing(timeout = 20.seconds) {
+                        phoneAsked.incrementAndGet()
+                        true
+                    },
+                )
+                phoneDone.countDown()
+            }
+
+            val endpoint = requireNotNull(phone.controlEndpoint)
+            var opened = false
+            repeat(50) {
+                if (phone.isPairingWindowOpen) { opened = true; return@repeat }
+                Thread.sleep(20)
+            }
+            assertTrue("the pairing window must actually open", opened || phone.isPairingWindowOpen)
+
+            // The probe: exactly what the gateway arm of PairingDiscovery does.
+            val probe = com.slipstream.core.pairing.TlsPairingProbe(pc.identity)
+            val candidate = runBlocking {
+                probe.probe(InetSocketAddress(LOOPBACK, endpoint.port))
+            }
+
+            assertNotNull("the probe must find the responder", candidate)
+            assertEquals(phone.identity.fingerprint, candidate!!.fingerprint)
+            assertEquals(0, phoneAsked.get())
+            assertTrue(
+                "a probe that never reached the user must leave the window open",
+                phone.isPairingWindowOpen,
+            )
+
+            // And the real attempt, arriving after the probe, still completes.
+            val pcResult = pc.initiatePairing(InetSocketAddress(LOOPBACK, endpoint.port)) { true }
+
+            assertTrue(phoneDone.await(20, TimeUnit.SECONDS))
+            assertNotNull("the initiator must end up paired", pcResult)
+            assertNotNull("the responder must end up paired", phoneResult.get())
+            assertEquals(1, phoneAsked.get())
+        } finally {
+            phone.close()
+            pc.close()
+        }
+    }
+
+    @Test
     fun `a declined code pairs neither side and closes the window`() {
         val phone = peer("Phone")
         val pc = peer("PC")

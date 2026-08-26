@@ -31,8 +31,12 @@ import org.junit.Test
 private class FakeController : PeerController {
     override val status: StateFlow<PeerStatus> = MutableStateFlow(PeerStatus(PeerConnectionState.Idle))
 
-    var paired: Boolean = false
-        private set
+    override val isPaired: StateFlow<Boolean> get() = _isPaired
+    private val _isPaired = MutableStateFlow(false)
+
+    var paired: Boolean
+        get() = _isPaired.value
+        private set(value) { _isPaired.value = value }
 
     override suspend fun start() = Unit
 

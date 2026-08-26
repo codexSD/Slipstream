@@ -85,11 +85,27 @@
     <HasPackageAndPublishMenu>true</HasPackageAndPublishMenu>
   </PropertyGroup>
 
-  <!-- Publish Properties -->
+  <!--
+    Publish properties.
+
+    Slipstream is a personal, sideloaded tool: it is published unpackaged and self-contained so
+    the folder can simply be copied to a PC and run, with no matching .NET runtime and no Windows
+    App SDK runtime installed. WindowsAppSDKSelfContained carries the WinUI runtime alongside it
+    for the same reason.
+
+    Trimming is deliberately OFF. The WinUI template turns PublishTrimmed on for every non-Debug
+    configuration, which used to fail the Release *build* outright with NETSDK1102 ("Optimizing
+    assemblies for size is not supported for the selected publish configuration") because the app
+    was not self-contained. Even self-contained, the trimmer cannot see through WinUI's XAML type
+    activation or the COM interop in ThumbnailProvider, so it would strip types that are only ever
+    resolved by name at runtime. A larger output folder is the correct trade here.
+  -->
   <PropertyGroup>
+    <WindowsPackageType>None</WindowsPackageType>
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <SelfContained>true</SelfContained>
     <PublishReadyToRun Condition="'$(Configuration)' == 'Debug'">False</PublishReadyToRun>
     <PublishReadyToRun Condition="'$(Configuration)' != 'Debug'">True</PublishReadyToRun>
-    <PublishTrimmed Condition="'$(Configuration)' == 'Debug'">False</PublishTrimmed>
-    <PublishTrimmed Condition="'$(Configuration)' != 'Debug'">True</PublishTrimmed>
+    <PublishTrimmed>False</PublishTrimmed>
   </PropertyGroup>
 </Project>

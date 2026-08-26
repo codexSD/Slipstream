@@ -59,7 +59,7 @@ class SlipstreamApplicationPlayTest {
     fun `a local file play request opens ACTION_VIEW against a content uri, not a bare file uri`() {
         val app = app()
         // Must live under one of file_paths.xml's declared roots (files-path/external-files-path)
-        // - FileProvider.getUriForFile throws for anything outside them.
+        // - SlipstreamApplication.localFileContentUri throws for anything outside them.
         val file = File(app.filesDir, "song.mp3").apply { writeBytes(ByteArray(4)) }
 
         app.playSink.onLocalFile(file, "audio/mpeg")
@@ -68,9 +68,29 @@ class SlipstreamApplicationPlayTest {
         assertEquals(Intent.ACTION_VIEW, started.action)
         assertEquals("audio/mpeg", started.type)
         assertEquals("content", started.data?.scheme)
+        assertEquals("com.slipstream.app.fileprovider", started.data?.authority)
         assertTrue(
             "must grant read access to the resolved player, since it never had one otherwise",
             (started.flags and Intent.FLAG_GRANT_READ_URI_PERMISSION) != 0,
+        )
+    }
+
+    @Test
+    fun `a local file nested under a subdirectory of filesDir resolves to a content uri under the right root`() {
+        val app = app()
+        val nested = File(app.filesDir, "slipstream/incoming/clip.mp4").apply {
+            parentFile?.mkdirs()
+            writeBytes(ByteArray(4))
+        }
+
+        app.playSink.onLocalFile(nested, "video/mp4")
+
+        val started = requireNotNull(awaitStartedActivity(app)) { "no activity was ever started" }
+        assertEquals("content", started.data?.scheme)
+        assertEquals(
+            "the encoded path must carry the internal_root name and the nested relative path",
+            "/internal_root/slipstream/incoming/clip.mp4",
+            started.data?.encodedPath,
         )
     }
 }

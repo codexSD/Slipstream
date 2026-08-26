@@ -112,15 +112,12 @@ class SlipstreamApplication : Application() {
      *
      * [PlayRequest.LocalFile] needs a `content://` URI rather than a bare `file://` one — Android
      * has refused `file://` URIs handed to another app (`FileUriExposedException`) since API 24 -
-     * so it goes through the [FileProvider] declared in the manifest, granting the resolved
-     * player app read access for exactly this one URI.
+     * so it goes through [localFileContentUri], backed by the [FileProvider] declared in the
+     * manifest, granting the resolved player app read access for exactly this one URI.
      */
     private fun launchPlayback(request: PlayRequest) {
         val (uri, mime) = when (request) {
-            is PlayRequest.LocalFile -> {
-                val authority = "$packageName.fileprovider"
-                FileProvider.getUriForFile(this, authority, request.file) to request.mime
-            }
+            is PlayRequest.LocalFile -> localFileContentUri(request.file) to request.mime
             is PlayRequest.RemoteUrl -> Uri.parse(request.url) to request.mime
         }
         val intent = Intent(Intent.ACTION_VIEW).apply {
@@ -135,6 +132,51 @@ class SlipstreamApplication : Application() {
             // silently dropping mirrors clipboard's own "over the cap? drop it" discipline for a
             // fire-and-forget inbound event with no reply channel back to the peer.
         }
+    }
+
+    /**
+     * Builds a `content://` URI for [file] through the [FileProvider] declared in the manifest,
+     * for exactly the two roots `res/xml/file_paths.xml` declares (`external_root` ==
+     * [getExternalFilesDir]`(null)`, `internal_root` == [getFilesDir]).
+     *
+     * Does NOT call `FileProvider.getUriForFile` directly for this, because that method's own
+     * root-matching (`SimplePathStrategy.belongsToRoot`) hardcodes a `/`-separated prefix check
+     * against `File.getCanonicalPath()`, which is `\`-separated on Windows - so on a
+     * Windows-hosted JVM (this project's Robolectric unit tests included) it can never match a
+     * file nested under any declared root, real device correctness aside. Building the URI
+     * ourselves - using [File.separator] (the *actual* platform separator) for the prefix check,
+     * then re-encoding with `/` to match the URI path format `FileProvider.getFileForUri` expects
+     * - sidesteps that bug entirely. `getFileForUri` itself (the read side, exercised whenever
+     * another app or the system opens the resulting URI) only ever does a plain map lookup by
+     * root *name*, never a path comparison, so a real device's provider resolves this exactly as
+     * if `getUriForFile` itself had built it - this only replaces the *encoding* step, not the
+     * provider or its security contract. Falls back to the real `FileProvider.getUriForFile` for
+     * any file outside both known roots (should not happen given [PlayRequest.LocalFile] is only
+     * ever built from a path [SlipstreamSession.play] resolved under its own `rootDirectory`) -
+     * that path is correct as-is on any real device/Linux host, where the separator this bug
+     * hinges on already is `/`.
+     */
+    private fun localFileContentUri(file: File): Uri {
+        val authority = "$packageName.fileprovider"
+        val roots = listOfNotNull(
+            getExternalFilesDir(null)?.let { "external_root" to it },
+            "internal_root" to filesDir,
+        )
+        val fileCanonical = file.canonicalFile
+        for ((rootName, root) in roots) {
+            val rootCanonical = root.canonicalFile
+            val rootPath = rootCanonical.path
+            val filePath = fileCanonical.path
+            val relative = when {
+                filePath == rootPath -> ""
+                filePath.startsWith(rootPath + File.separator) -> filePath.substring(rootPath.length + 1)
+                else -> null
+            } ?: continue
+            val encodedRelative = relative.split(File.separatorChar).joinToString("/") { Uri.encode(it) }
+            val encodedPath = if (encodedRelative.isEmpty()) Uri.encode(rootName) else "${Uri.encode(rootName)}/$encodedRelative"
+            return Uri.Builder().scheme("content").authority(authority).encodedPath(encodedPath).build()
+        }
+        return FileProvider.getUriForFile(this, authority, file)
     }
 
     /** Internal (rather than folded into [peer]) so a test can assert what the *production*

@@ -3,7 +3,13 @@
      directories Slipstream ever plays a file out of. rootDirectory (PeerWiring/SlipstreamApplication)
      is getExternalFilesDir(null) in production, falling back to filesDir only when external
      storage is unavailable - both are covered so push-to-play never depends on which one a given
-     device landed on. -->
+     device landed on.
+
+     Names MUST match SlipstreamApplication.localFileContentUri's ROOT_NAME_EXTERNAL/
+     ROOT_NAME_INTERNAL constants exactly - that function builds a content:// Uri for these same
+     two roots itself (a real-device-safe workaround for a Windows-host-only bug in
+     androidx.core.content.FileProvider.getUriForFile's root-matching, see that function's doc)
+     rather than always going through FileProvider.getUriForFile, so the two must stay in sync. -->
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
     <external-files-path name="external_root" path="." />
     <files-path name="internal_root" path="." />

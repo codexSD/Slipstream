@@ -4,17 +4,27 @@ import com.slipstream.core.control.ControlConnection
 import com.slipstream.core.control.ControlMessage
 import com.slipstream.core.control.ControlServer
 import com.slipstream.core.control.PinnedTls
+import com.slipstream.core.discovery.DatagramMessage
+import com.slipstream.core.discovery.MulticastTransport
+import com.slipstream.core.discovery.PeerAnnouncement
 import com.slipstream.core.identity.DeviceIdentity
 import com.slipstream.core.identity.PairedPeerStore
 import com.slipstream.core.identity.PairingCode
 import com.slipstream.core.net.LocalNetwork
 import com.slipstream.core.net.NetworkInfo
+import com.slipstream.core.SlipstreamPorts
 import java.net.InetAddress
+import java.net.InetSocketAddress
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
 import kotlin.io.path.createTempDirectory
 import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -29,6 +39,89 @@ private class FixedNetworkInfo(private val address: InetAddress) : NetworkInfo {
 }
 
 private fun emptyPeerStore(): PairedPeerStore = PairedPeerStore(createTempDirectory().toFile())
+
+/** The phone-hotspot topology of spec §1: the peer is this device's default gateway. */
+private class HotspotNetworkInfo : NetworkInfo {
+    override fun current(): LocalNetwork = LocalNetwork(
+        localAddress = InetAddress.getByName("10.199.176.201"),
+        gateway = InetAddress.getByName("10.199.176.137"),
+        prefixLength = 24,
+        key = "hotspot",
+    )
+}
+
+private class FlatNetworkInfo : NetworkInfo {
+    override fun current(): LocalNetwork = LocalNetwork(
+        localAddress = InetAddress.getByName("192.168.4.2"),
+        gateway = null,
+        prefixLength = 24,
+        key = "flat",
+    )
+}
+
+/**
+ * A transport that never delivers anything, exactly like a real Android softAP: sends are
+ * accepted and dropped, and [receive] parks forever until [close].
+ */
+private class SilentTransport : MulticastTransport {
+    private val closed = CompletableDeferred<Unit>()
+
+    override suspend fun send(payload: ByteArray, target: InetSocketAddress) = Unit
+
+    override suspend fun receive(): DatagramMessage {
+        closed.await()
+        throw java.net.SocketException("closed")
+    }
+
+    override fun close() {
+        closed.complete(Unit)
+    }
+}
+
+/** A transport that delivers [messages] once, then goes silent. */
+private class ScriptedTransport(private val messages: List<DatagramMessage>) : MulticastTransport {
+    private val closed = CompletableDeferred<Unit>()
+    private var index = 0
+
+    override suspend fun send(payload: ByteArray, target: InetSocketAddress) = Unit
+
+    override suspend fun receive(): DatagramMessage {
+        if (index < messages.size) return messages[index++]
+        closed.await()
+        throw java.net.SocketException("closed")
+    }
+
+    override fun close() {
+        closed.complete(Unit)
+    }
+}
+
+private fun announcement(deviceId: String, name: String, fingerprint: String): DatagramMessage =
+    DatagramMessage(
+        payload = PeerAnnouncement(
+            v = SlipstreamPorts.PROTOCOL_VERSION,
+            deviceId = deviceId,
+            name = name,
+            fingerprint = fingerprint,
+            control = SlipstreamPorts.CONTROL,
+            kind = "announce",
+        ).toJson().toByteArray(Charsets.UTF_8),
+        sender = InetSocketAddress(LOOPBACK, SlipstreamPorts.DISCOVERY),
+    )
+
+/** Records every endpoint it was asked about, and answers for at most one. */
+private class RecordingProbe(private val answersFor: InetSocketAddress? = null) : PairingProbe {
+    val seen = CopyOnWriteArrayList<InetSocketAddress>()
+
+    override suspend fun probe(endpoint: InetSocketAddress): PairingCandidate? {
+        seen.add(endpoint)
+        return if (answersFor != null && endpoint == answersFor) {
+            PairingCandidate("", "", "deadbeef", endpoint)
+        } else {
+            null
+        }
+    }
+}
 
 class PairingTest {
 
@@ -339,5 +432,146 @@ class PairingTest {
 
         assertNull(result)
         assertFalse("must not listen at all when no window is open", transportCreated)
+    }
+
+    @Test
+    fun `pairing discovery finds a peer by gateway probe when multicast yields nothing`() = runBlocking {
+        // The phone-hotspot case, reproduced: the peer is the default gateway and the softAP
+        // never delivers our multicast. Discovery must still find it, instantly.
+        val identity = DeviceIdentity.createNew("Device")
+        val window = PairingWindow().apply { open() }
+        val gateway = InetSocketAddress(InetAddress.getByName("10.199.176.137"), SlipstreamPorts.CONTROL)
+        val probe = RecordingProbe(answersFor = gateway)
+
+        val discovery = PairingDiscovery(
+            identity = identity,
+            window = window,
+            transportFactory = { SilentTransport() },
+            networkInfo = HotspotNetworkInfo(),
+            probe = probe,
+            sweepProbe = RecordingProbe(),
+        )
+
+        val result = discovery.find(timeout = 10.seconds)
+
+        assertEquals(gateway, result?.endpoint)
+        assertEquals("deadbeef", result?.fingerprint)
+        assertTrue(probe.seen.contains(gateway))
+    }
+
+    @Test
+    fun `pairing discovery finds a peer by subnet sweep when there is no gateway`() = runBlocking {
+        val identity = DeviceIdentity.createNew("Device")
+        val window = PairingWindow().apply { open() }
+        val target = InetSocketAddress(InetAddress.getByName("192.168.4.9"), SlipstreamPorts.CONTROL)
+        val sweep = RecordingProbe(answersFor = target)
+
+        val discovery = PairingDiscovery(
+            identity = identity,
+            window = window,
+            transportFactory = { SilentTransport() },
+            networkInfo = FlatNetworkInfo(),
+            probe = RecordingProbe(),
+            sweepProbe = sweep,
+        )
+
+        val result = discovery.find(timeout = 10.seconds)
+
+        assertEquals(target, result?.endpoint)
+        // Bounded to the /24, and never probing ourselves.
+        assertTrue(sweep.seen.all { it.address.hostAddress!!.startsWith("192.168.4.") })
+        assertFalse(sweep.seen.any { it.address == InetAddress.getByName("192.168.4.2") })
+    }
+
+    @Test
+    fun `pairing discovery still finds a peer by multicast when multicast works`() = runBlocking {
+        val identity = DeviceIdentity.createNew("Device")
+        val window = PairingWindow().apply { open() }
+        val probe = RecordingProbe()
+
+        val discovery = PairingDiscovery(
+            identity = identity,
+            window = window,
+            transportFactory = {
+                ScriptedTransport(listOf(announcement("stranger-id", "Stranger Phone", "cafebabe")))
+            },
+            networkInfo = HotspotNetworkInfo(),
+            probe = probe,
+            sweepProbe = probe,
+        )
+
+        val result = discovery.find(timeout = 10.seconds)
+
+        assertEquals("stranger-id", result?.deviceId)
+        assertEquals("Stranger Phone", result?.name)
+        assertEquals("cafebabe", result?.fingerprint)
+    }
+
+    @Test
+    fun `pairing discovery probes nothing at all while the window is closed`() = runBlocking {
+        // The whole security argument: outside the window we do not touch the network.
+        val identity = DeviceIdentity.createNew("Device")
+        val gateway = InetSocketAddress(InetAddress.getByName("10.199.176.137"), SlipstreamPorts.CONTROL)
+        val probe = RecordingProbe(answersFor = gateway)
+
+        val discovery = PairingDiscovery(
+            identity = identity,
+            window = PairingWindow(), // never opened
+            transportFactory = { throw AssertionError("must not open a transport when no window is open") },
+            networkInfo = HotspotNetworkInfo(),
+            probe = probe,
+            sweepProbe = probe,
+        )
+
+        val result = discovery.find(timeout = 5.seconds)
+
+        assertNull(result)
+        assertTrue("must not probe any address when no window is open", probe.seen.isEmpty())
+    }
+
+    @Test
+    fun `pairing discovery stops searching the moment the window closes mid-search`() = runBlocking {
+        val identity = DeviceIdentity.createNew("Device")
+        val window = PairingWindow().apply { open() }
+        val probe = RecordingProbe()
+
+        val discovery = PairingDiscovery(
+            identity = identity,
+            window = window,
+            transportFactory = { SilentTransport() },
+            networkInfo = HotspotNetworkInfo(),
+            probe = probe,
+            sweepProbe = probe,
+        )
+
+        val find = async { discovery.find(timeout = 30.seconds) }
+        delay(100)
+        window.close()
+
+        assertNull(find.await())
+    }
+
+    @Test
+    fun `a peer found by the gateway probe is a candidate and never a pairing`() = runBlocking {
+        // Discovery hands back an address and a fingerprint. It does not pair and it does not
+        // persist: mutual six-digit confirmation is PairingCoordinator's job alone.
+        val identity = DeviceIdentity.createNew("Device")
+        val window = PairingWindow().apply { open() }
+        val store = emptyPeerStore()
+        val gateway = InetSocketAddress(InetAddress.getByName("10.199.176.137"), SlipstreamPorts.CONTROL)
+
+        val discovery = PairingDiscovery(
+            identity = identity,
+            window = window,
+            transportFactory = { SilentTransport() },
+            networkInfo = HotspotNetworkInfo(),
+            probe = RecordingProbe(answersFor = gateway),
+            sweepProbe = RecordingProbe(),
+        )
+
+        val result = discovery.find(timeout = 10.seconds)
+
+        assertEquals(gateway, result?.endpoint)
+        assertNull("discovery must never persist a peer", store.peer)
     }
 }

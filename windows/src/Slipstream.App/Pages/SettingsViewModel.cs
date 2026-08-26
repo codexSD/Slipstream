@@ -46,6 +46,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
     private bool _autostartEnabled;
     private string _bandText;
     private string? _autostartError;
+    private bool _isPaired;
 
     public SettingsViewModel(
         SettingsStore store,
@@ -81,12 +82,32 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
         PairDeviceCommand = new AsyncRelayCommand(PairDeviceAsync);
 
+        _isPaired = peerHost.IsPaired;
+        UnpairCommand = new RelayCommand(Unpair);
+
         peerHost.StateChanged += OnPeerStateChanged;
     }
 
     /// <summary>Unsubscribes from the long-lived <see cref="IPeerHost.StateChanged"/> event —
     /// see DeviceViewModel.Dispose's remarks.</summary>
     public void Dispose() => _peerHost.StateChanged -= OnPeerStateChanged;
+
+    /// <summary>Whether a peer is currently paired. Drives which of "Pair a device" and
+    /// "Unpair" the page offers — it previously offered "Pair a device" unconditionally,
+    /// with no way to tell whether this PC was already paired and no way to undo it.</summary>
+    public bool IsPaired
+    {
+        get => _isPaired;
+        private set => SetProperty(ref _isPaired, value);
+    }
+
+    public IRelayCommand UnpairCommand { get; }
+
+    private void Unpair()
+    {
+        _peerHost.Unpair();
+        IsPaired = _peerHost.IsPaired;
+    }
 
     /// <summary>Number of parallel streams a pull uses. Clamped to [1,8] — spec's bounded
     /// range for SlipstreamPeer.StreamCount (Slipstream.Core.SlipstreamPeer).</summary>
@@ -190,7 +211,13 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
     public AsyncRelayCommand PairDeviceCommand { get; }
 
-    private Task PairDeviceAsync() => _pairDeviceLauncher?.Invoke(CancellationToken.None) ?? Task.CompletedTask;
+    private async Task PairDeviceAsync()
+    {
+        if (_pairDeviceLauncher is not null) await _pairDeviceLauncher(CancellationToken.None);
+
+        // Whether the dialog actually paired is the host's to answer, not the dialog's.
+        IsPaired = _peerHost.IsPaired;
+    }
 
     private void OnPeerStateChanged(PeerConnectionState state, string? peerName, string? band) =>
         RunOnUiThread(() => BandText = FormatBand(band));

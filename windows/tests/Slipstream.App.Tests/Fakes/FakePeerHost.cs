@@ -91,6 +91,19 @@ public sealed class FakePeerHost : IPeerHost
             return null;
 
         Paired = true;
+        IsPaired = true;
         return new PairedPeer("fake-device-id", "fake-fingerprint", PeerName ?? "Fake Peer", DateTimeOffset.UtcNow);
+    }
+
+    public bool IsPaired { get; set; }
+
+    /// <summary>Whether <see cref="Unpair"/> was called, so a test can tell "the view model
+    /// updated its own flag" from "the view model actually asked the host to forget the peer".</summary>
+    public bool UnpairCalled { get; private set; }
+
+    public void Unpair()
+    {
+        UnpairCalled = true;
+        IsPaired = false;
     }
 }

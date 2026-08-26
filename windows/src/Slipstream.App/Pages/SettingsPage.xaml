@@ -11,6 +11,7 @@
 
     <UserControl.Resources>
         <meridian:BoolToVisibilityConverter x:Key="BoolToVisibilityConverter" />
+        <local:InverseBoolToVisibilityConverter x:Key="InverseBoolToVisibilityConverter" />
     </UserControl.Resources>
 
     <ScrollViewer VerticalScrollBarVisibility="Auto">
@@ -106,9 +107,28 @@
                 <StackPanel Spacing="16" Padding="20">
                     <meridian:MeridianSectionHeader Title="Devices" />
 
-                    <Button x:Name="PairDeviceButton"
-                            Content="Pair a device"
-                            Click="PairDeviceButton_Click" />
+                    <!-- Which action is offered follows the actual pairing state. This used to
+                         be an unconditional "Pair a device", so the page never said whether
+                         this PC was paired and offered no way to undo it. -->
+                    <StackPanel Spacing="8"
+                                Visibility="{x:Bind ViewModel.IsPaired, Mode=OneWay, Converter={StaticResource InverseBoolToVisibilityConverter}}">
+                        <TextBlock Style="{StaticResource MeridianBodyStyle}"
+                                   Foreground="{ThemeResource MeridianInkMutedBrush}"
+                                   Text="This PC is not paired with a device." />
+                        <Button x:Name="PairDeviceButton"
+                                Content="Pair a device"
+                                Click="PairDeviceButton_Click" />
+                    </StackPanel>
+
+                    <StackPanel Spacing="8"
+                                Visibility="{x:Bind ViewModel.IsPaired, Mode=OneWay, Converter={StaticResource BoolToVisibilityConverter}}">
+                        <TextBlock Style="{StaticResource MeridianBodyStyle}"
+                                   Foreground="{ThemeResource MeridianPositiveBrush}"
+                                   Text="This PC is paired with a device." />
+                        <Button x:Name="UnpairButton"
+                                Content="Unpair"
+                                Command="{x:Bind ViewModel.UnpairCommand}" />
+                    </StackPanel>
 
                     <!-- Spec §16: PC hosts the hotspot, so a slow link is explained rather
                          than left for the user to guess about. Names the band the shell

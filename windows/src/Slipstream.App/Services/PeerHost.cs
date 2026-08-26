@@ -492,6 +492,19 @@ public sealed class PeerHost : IPeerHost, IAsyncDisposable
     public Task<PairedPeer?> PairAsync(Func<string, CancellationToken, Task<bool>> confirm, CancellationToken ct) =>
         _peer.PairAsync(confirm, ConnectTimeout, ct);
 
+    public bool IsPaired => _peer.Peers.IsPaired;
+
+    public void Unpair()
+    {
+        SlipstreamLog.Info("pairing", "unpaired at the user's request");
+        _peer.Peers.Unpair();
+
+        // Drop the live connection too: it was authorised by the pairing that just went away,
+        // and leaving it up would keep reporting Connected to a peer this device no longer
+        // trusts. Fire-and-forget — the state machine handles the disconnect from here.
+        _ = DropConnectionAsync();
+    }
+
     private async Task ConnectAsync(CancellationToken ct)
     {
         SetState(PeerConnectionState.Searching);

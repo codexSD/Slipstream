@@ -144,6 +144,9 @@ public class DeviceViewModelTests
         public void PauseDiscovery() => IsDiscoveryPaused = true;
         public void ResumeDiscovery() => IsDiscoveryPaused = false;
 
+        public bool IsPaired => true;
+        public void Unpair() { } // Not what this fake is for; see the class summary.
+
         public event Action<PeerConnectionState, string?, string?>? StateChanged { add { } remove { } }
 
         public Task StartAsync(CancellationToken ct) => Task.CompletedTask;

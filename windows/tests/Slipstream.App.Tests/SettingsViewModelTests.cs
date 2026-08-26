@@ -132,6 +132,27 @@ public class SettingsViewModelTests : IDisposable
         await vm.PairDeviceCommand.ExecuteAsync(null);
     }
 
+    /// <summary>
+    /// Settings offered "Pair a device" and nothing else, no matter what: the page never
+    /// reflected whether this PC was already paired, and there was no way to undo a pairing
+    /// from Windows at all. Android has had both since it shipped. It matters beyond symmetry —
+    /// when the stored fingerprint goes stale, the peer is rejected during discovery and simply
+    /// reads as "not found", and the user has no way to clear it and start over.
+    /// </summary>
+    [Fact]
+    public void Pairing_state_is_reflected_and_can_be_undone()
+    {
+        var host = new FakePeerHost { IsPaired = true };
+        var vm = new SettingsViewModel(new SettingsStore(_path), host, null);
+
+        Assert.True(vm.IsPaired);
+
+        vm.UnpairCommand.Execute(null);
+
+        Assert.True(host.UnpairCalled);
+        Assert.False(vm.IsPaired);
+    }
+
     [Fact]
     public void Band_reflects_the_peer_hosts_reported_band()
     {

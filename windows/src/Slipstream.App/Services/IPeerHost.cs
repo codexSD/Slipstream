@@ -56,4 +56,13 @@ public interface IPeerHost
     /// already known from the listing that produced it, so this is pure URL construction.</summary>
     string? GetThumbnailUrl(string thumbnailToken);
     Task<PairedPeer?> PairAsync(Func<string, CancellationToken, Task<bool>> confirm, CancellationToken ct);
+
+    /// <summary>Whether this device currently has a paired peer.</summary>
+    bool IsPaired { get; }
+
+    /// <summary>Forgets the paired peer and drops any connection to it. The counterpart to
+    /// <see cref="PairAsync"/>, and the only way out of a pairing that has gone stale — a
+    /// stored fingerprint that no longer matches the peer's certificate causes it to be
+    /// rejected during discovery, which is indistinguishable from the peer not being there.</summary>
+    void Unpair();
 }

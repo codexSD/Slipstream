@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Net;
 using Slipstream.Core.Discovery;
 using Slipstream.Core.Net;
@@ -45,17 +44,20 @@ public class SubnetSweepStrategyTests
     [Fact]
     public async Task Runs_probes_concurrently_rather_than_serially()
     {
+        // Measures the property directly — the peak number of probes simultaneously in
+        // flight — rather than inferring it from elapsed time. The wall-clock version of
+        // this assertion (serial = 253 * 50ms = 12.65s, so "must finish under 2s") failed
+        // under a loaded full-suite run even though the sweep was perfectly concurrent:
+        // it was really measuring how busy the machine was. A serial sweep cannot exceed a
+        // peak of 1 no matter how fast or slow the machine is.
         var probe = new FakeProbe("192.168.1.254:53321") { Delay = 50 };
         var strategy = new SubnetSweepStrategy(probe.Probe);
 
-        var stopwatch = Stopwatch.StartNew();
         var found = await strategy.FindAsync(Network(), CancellationToken.None);
-        stopwatch.Stop();
 
         Assert.NotNull(found);
-        // Serial would be 253 * 50ms = 12.65s. Concurrent should finish in well under 2s.
-        Assert.True(stopwatch.ElapsedMilliseconds < 2000,
-            $"Sweep took {stopwatch.ElapsedMilliseconds}ms â€” probes are not running concurrently.");
+        Assert.True(probe.PeakInFlight >= 50,
+            $"Peak concurrent probes was {probe.PeakInFlight} of 253 hosts — probes are not running concurrently.");
     }
 
     [Fact]

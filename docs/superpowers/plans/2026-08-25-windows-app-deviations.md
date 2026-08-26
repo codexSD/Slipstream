@@ -237,3 +237,55 @@ executed. Reporting this plainly rather than implying any of them passed:
 **Recommendation:** before shipping to the actual paired phone, re-run `AutostartServiceTests` on
 real hardware/an unrestricted environment (2 tests currently fail only here), and walk this full
 table manually against the real Android app.
+
+## Post-plan — the app had never actually been launched (branch `fix-app-launch`)
+
+The plan shipped with 120 green tests and an executable that died during `Window.Activate()`
+without ever showing a window. Every test was a view-model or source-shape test; nothing
+started the process, so nothing could notice. Two stacked defects in the shell:
+
+1. `ShellWindow` stashed each destination view in `RootGrid.Resources` and pulled it back with
+   `{StaticResource}` from a `DataTemplate` handed out by a `DataTemplateSelector`. Those
+   templates have no parent chain when inflated, so the lookup never reached `RootGrid` and
+   threw *Cannot find a Resource with the Name/Key DevicePageContent*.
+2. Moving the entries to `Application.Current.Resources` made the lookup succeed and exposed
+   the real defect: WinUI flags every `ResourceDictionary` value as shareable, so assigning one
+   to `ContentControl.Content` throws `ArgumentException` / `E_INVALIDARG`. The pattern cannot
+   work at all. The views were also `Page`, which a `ContentControl` cannot host either.
+
+Fixed by building the five views in the code-behind and assigning them to `PageHost.Content`
+directly, and by making them `UserControl`s. `DestinationTemplateSelector` is gone.
+
+The reported `REGDB_E_CLASSNOTREG` at `Application.Start` did **not** reproduce on this branch:
+the self-contained/`WindowsPackageType=None` configuration already in `Slipstream.App.csproj` is
+correct, the Windows App SDK auto-initializer *is* generated (`WindowsAppSdkAutoInitialize=true`
+via `WindowsAppSdkUndockedRegFreeWinRTInitialize`), and the app loads
+`Microsoft.UI.Xaml.dll` from its own output folder. No build configuration was changed.
+
+### Startup crash logging
+
+An unpackaged `WinExe` that throws during XAML load leaves nothing but a generic `0xc000027b`
+in the event log — no console, no window, no managed stack. `App` now writes any unhandled
+exception to `%LOCALAPPDATA%\Slipstream\startup-error.log`.
+
+### `AppLaunchSmokeTest` and CI
+
+`Slipstream.App.Tests.AppLaunchSmokeTest` starts the built executable, waits for a top-level
+window titled "Slipstream", and kills it. It is **not** environment-gated, by design.
+
+**Unverified on CI.** It has only been run on a real interactive Windows desktop session, where
+it passes (and, with a deliberately-thrown constructor, fails with the exact stack trace). The
+`windows-core` workflow runs on GitHub-hosted `windows-latest`; whether an unpackaged WinUI 3
+app can create a top-level window in that session was not tested here. If it turns out it
+cannot, the correct response is to move this test behind a self-hosted/interactive runner —
+**not** to gate it on an environment variable, which would restore exactly the blind spot it
+exists to close. Until CI has been observed running it, treat a green CI as *not* evidence that
+the app launches, and run it locally before shipping.
+
+### Still not verified against real hardware
+
+With the phone's foreground service reachable (`10.199.176.137:53321` accepts TCP), the app
+starts, renders the Device page and reports its connection state — *Connection lost* / *Not yet
+connected*, walking its S1–S4 discovery ladder — rather than throwing. It does not reach a
+connected state, which is expected for an unpaired peer. Pairing still needs the user, so every
+row of the Step 5 table above remains **NOT VERIFIED**.

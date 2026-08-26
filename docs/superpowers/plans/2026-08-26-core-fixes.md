@@ -98,7 +98,24 @@ looking specifically at whether the client's `Certificate` message is empty.
 
 ---
 
-## Fix 2 — flaky `MediaServerTests` (main is red)
+## Fix 2 — flaky `MediaServerTests` — **HYPOTHESIS DISPROVEN, superseded by Fix 5**
+
+> **Correction, after investigation.** The WPAD/proxy hypothesis below is **wrong** and the change
+> was reverted, not committed. It was tested properly and failed the bar: 6 green out of 10 runs,
+> with and without `UseProxy = false` — identical failure rate and identical 18 s duration either way.
+>
+> The real cause is a **product bug in `MediaServer`**, not a test artifact. The failure is a
+> server-side TCP reset *while the client is reading the body*
+> (`SocketException: An existing connection was forcibly closed`, thrown from
+> `HttpContent.LoadIntoBufferAsyncCore` — headers arrive fine). Only tests that read the full
+> 100 KB body fail; the 404, 416, and small-range tests never do.
+>
+> **The claim below that "the blast radius is tests only" and there is no §11 concern was also
+> wrong.** `MediaServer` is product code and the RST is emitted by the server, so a real media
+> player streaming a file is subject to the same truncation.
+>
+> Superseded by **Fix 5**. The section is kept rather than deleted so the ruled-out hypothesis and
+> its evidence stay on the record.
 
 **Files:** `windows/tests/Slipstream.Core.Tests/Media/MediaServerTests.cs`,
 `windows/tests/Slipstream.Core.Tests/Control/SlipstreamSessionTests.cs`
@@ -188,8 +205,94 @@ hardware-verified in an actual STA+AP configuration, so the deviations record st
 
 ---
 
+---
+
+# Round 2
+
+Fixes 1, 3, and 4 are merged. Fix 2's hypothesis was disproven and is superseded below.
+
+---
+
+## Fix 5 — `MediaServer` truncates responses on teardown (product bug)
+
+**File:** `windows/src/Slipstream.Core/Media/MediaServer.cs`
+
+**Symptom.** Intermittently — roughly 4 runs in 10 — a client reading a media response gets the
+headers, then a TCP reset partway through the body. Surfaces today as flaky
+`MediaServerTests`, but it is a real streaming defect: a media player would see a truncated file.
+
+**Cause.** `HandleAsync`'s `finally` calls `client.Client.DisconnectAsync(reuseSocket: false)` and
+then `client.Dispose()` immediately after `ServeFileAsync` returns. Writing to a socket only hands
+bytes to the OS send buffer; aborting the socket before the stack has drained it discards whatever
+is still queued. The file's own comments describe a previously-fixed "forcibly closed" bug with the
+same error string, which suggests that earlier fix reduced the frequency rather than removing the
+cause.
+
+**Change.** Close gracefully instead of aborting:
+
+1. `await stream.FlushAsync(...)` (already done in `ServeFileAsync`).
+2. `client.Client.Shutdown(SocketShutdown.Send)` — sends FIN, letting queued data drain.
+3. Read from the socket until EOF, or until a short bounded timeout, so the peer's ACK/close is
+   observed before the handle goes away.
+4. Only then `Dispose()`.
+
+Wrap the shutdown in its own try/catch: a client that has already vanished must not surface an
+exception on a response that was otherwise served correctly.
+
+**Verification bar — non-negotiable.** Ten consecutive full-suite runs, all green:
+
+```bash
+for i in $(seq 1 10); do dotnet test windows/tests/Slipstream.Core.Tests/Slipstream.Core.Tests.csproj --nologo -v q 2>&1 | grep -E "Passed!|Failed!"; done
+```
+
+A single green run proves nothing here — the bug reproduces about 40% of the time. If ten runs do
+not come back clean, report the remaining failure mode rather than adding a retry or a timeout to
+paper over it.
+
+**Also check:** `PeerHostTests.Reports_Lost_then_recovers_on_reconnect` (in `Slipstream.App.Tests`)
+fails with the same ~18 s signature. Determine whether it shares this cause. If it does, this fix
+closes it; if not, say so — do not assume.
+
+---
+
+## Fix 6 — the solution test run silently skips `Slipstream.App.Tests`
+
+**Files:** `windows/Slipstream.sln`, `windows/tests/Slipstream.App.Tests/Slipstream.App.Tests.csproj`,
+`.github/workflows/windows-core.yml`
+
+**Symptom.** `dotnet test windows/Slipstream.sln` reports *"A total of 1 test files matched the
+specified pattern"* and runs only `Slipstream.Core.Tests`. Run directly, `Slipstream.App.Tests` has
+**117 tests, 3 failing**.
+
+The project is referenced by the solution, so this is not a missing entry — it is a targeting or
+discovery problem (the App test project targets `net9.0-windows10.0.19041.0` with a platform/RID
+that the solution-level run does not resolve).
+
+**Why this matters more than three failures.** CI runs the same solution command. Every Windows
+app test has therefore been invisible since Plan 5 merged, and the branch merged green with three
+red tests. This is the same failure shape as the commented-out thumbnail tests: a green badge over
+tests that never ran. Fix the visibility first — the three failures are the smaller half.
+
+**Change**
+
+1. Make `dotnet test windows/Slipstream.sln` execute **both** test projects. Confirm by the
+   *"test files matched"* line reporting 2, not by a passing exit code.
+2. Fix the two `AutostartServiceTests` failures. They fail in under half a second, which points at
+   an environment precondition — Task Scheduler registration typically needs elevation. If the test
+   genuinely cannot run unelevated, it must **fail loudly with a clear reason or be restructured to
+   test the logic without touching the real scheduler** — it must not be silently skipped.
+3. `PeerHostTests.Reports_Lost_then_recovers_on_reconnect` — coordinate with Fix 5; it may already
+   be fixed there.
+
+**Verification.** `dotnet test windows/Slipstream.sln` reports 2 test files and zero failures, ten
+times consecutively.
+
+---
+
 ## Reporting
 
 Each fix reports separately: what changed, whether tests pass, and — for fixes 1, 3, and 4 —
 whether the result is *verified* or only *plausible*, since none can be fully proven without
 hardware. Say which plainly.
+
+For fixes 5 and 6, state the **ten-run** result explicitly. A single green run is not a result.

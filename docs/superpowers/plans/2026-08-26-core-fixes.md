@@ -314,9 +314,47 @@ times consecutively.
 
 ---
 
-# Round 3 — open
+# Round 3 — closed
 
-## Fix 7 — `PeerHostTests` fail only inside the suite (cross-test interference)
+> **Outcome.** Fix 7 was **not a test bug**. `ControlServer` registered a connection in
+> `Connections` only *after* its side of the TLS handshake finished, while the peer had already
+> completed its own half and begun using the link — so `Connections` was never a picture of the
+> live sockets, and anything iterating it to sever or shut down connections silently skipped one
+> the peer was actively talking on. A second defect surfaced alongside: `DisposeAsync()` stopped
+> the listener but never closed accepted sockets, so live TLS sessions outlived the server object.
+>
+> **Product impact:** a consumer enumerating `Connections` to shut down or account for live links
+> misses in-handshake connections and leaks them past shutdown — a real peer can be left with a
+> live control channel the local side believes it closed.
+>
+> **Fix (`b5ed2e6`):** track every accepted `TcpClient` synchronously in the accept loop, before
+> any handshake, and add `CloseActiveConnections()` (mirroring `BulkServer.BreakActiveConnections()`)
+> which resets all of them including in-handshake ones. `DisposeAsync` calls it. `Connections`
+> remains an observation API, now documented as deliberately incomplete.
+>
+> The two `serverUsesFixedPorts: true` tests move ~80 MB and load the thread pool, delaying the
+> server's handshake continuation past the break — which is what turned an always-present race
+> into a deterministic 5/5 failure. Nothing static leaked; ports were not contended; xUnit
+> parallelism was not involved. All three of this document's original hypotheses were wrong.
+>
+> **Subnet sweep (`7f7cb22`):** replaced the wall-clock assertion with a direct measurement —
+> `FakeProbe` records peak simultaneous in-flight probes via `Interlocked`, asserting `>= 50` of
+> 253. A serial sweep can never exceed 1 at any load, so this tests the property the test cares
+> about rather than how busy the machine is.
+>
+> **Verification.** The implementing agent measured ten consecutive full-solution runs, all green.
+> Independently re-verified after merge: 6/6 Core runs green at 7 s each, and 4/5 full-solution
+> runs green (306 Core + 120 App).
+>
+> **One caveat, recorded rather than smoothed over.** During that 5-run pass, one Core run failed
+> while the machine was under heavy concurrent load from an unrelated Gradle build — the same pass
+> saw a 29 s Core run against a normal 7 s. The failing test name was not captured, and it did not
+> reproduce across six subsequent runs. It is most likely another load-sensitive timing assertion
+> of the kind the subnet-sweep fix addressed, but that is a guess, not a finding. **If a Core test
+> fails under load again, capture the name** — there may be one more elapsed-time assertion worth
+> converting to a direct measurement.
+
+## Fix 7 — `PeerHostTests` fail only inside the suite — **root cause was a product bug**
 
 **File:** `windows/tests/Slipstream.App.Tests/PeerHostTests.cs` (and whatever it shares state with)
 

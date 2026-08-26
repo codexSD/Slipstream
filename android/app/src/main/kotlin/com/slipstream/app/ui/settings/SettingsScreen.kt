@@ -5,10 +5,10 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -143,18 +143,19 @@ fun SettingsScreen(
                         color = MeridianTheme.colors.positive,
                         modifier = Modifier.testTag("paired-status"),
                     )
-                    Text(
-                        text = "Unpair",
-                        style = MeridianText.body.copy(
-                            color = MeridianTheme.colors.critical,
-                            fontWeight = FontWeight.Bold,
+                    Button(
+                        onClick = {
+                            scope.launch {
+                                peerController.unpair()
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MeridianTheme.colors.critical,
                         ),
-                        modifier = Modifier
-                            .testTag("unpair-button")
-                            .padding(8.dp),
-                    )
-                    // Note: This is text-based, not a button. Real implementation would use
-                    // a proper button with onClick. For now, this demonstrates the structure.
+                        modifier = Modifier.testTag("unpair-button"),
+                    ) {
+                        Text("Unpair")
+                    }
                 } else {
                     Text(
                         text = "Device is not paired.",
@@ -162,16 +163,30 @@ fun SettingsScreen(
                         color = MeridianTheme.colors.inkMuted,
                         modifier = Modifier.testTag("unpaired-status"),
                     )
-                    Text(
-                        text = "Pair a device",
-                        style = MeridianText.body.copy(
-                            color = MeridianTheme.colors.brand,
-                            fontWeight = FontWeight.Bold,
+                    Button(
+                        onClick = {
+                            scope.launch {
+                                peerController.openPairing().collect { progress ->
+                                    // Handle pairing progress inline
+                                    when (progress) {
+                                        is com.slipstream.app.peer.PairingProgress.CodeReceived -> {
+                                            // Code received; in a full implementation, show it to the user
+                                            // For now, we just acknowledge the flow started
+                                        }
+                                        is com.slipstream.app.peer.PairingProgress.Completed -> {
+                                            // Pairing completed; UI already reflects via isPaired state
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MeridianTheme.colors.brand,
                         ),
-                        modifier = Modifier
-                            .testTag("pair-button")
-                            .padding(8.dp),
-                    )
+                        modifier = Modifier.testTag("pair-button"),
+                    ) {
+                        Text("Pair a device")
+                    }
                 }
             }
         }

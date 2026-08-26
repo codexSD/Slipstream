@@ -1,5 +1,6 @@
 package com.slipstream.app.ui
 
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Folder
@@ -95,7 +96,15 @@ fun SlipstreamNavHost(peerController: PeerController, settingsStore: SettingsSto
     val context = LocalContext.current
     val transferQueue = (context.applicationContext as SlipstreamApplication).transferQueue
 
-    MeridianTheme {
+    // Determine darkTheme based on user preference.
+    // This is the only call site of isSystemInDarkTheme (constraint from spec §13).
+    val darkTheme = when (settingsStore.getTheme()) {
+        SettingsStore.Theme.Light -> false
+        SettingsStore.Theme.Dark -> true
+        SettingsStore.Theme.System -> isSystemInDarkTheme()
+    }
+
+    MeridianTheme(darkTheme = darkTheme) {
         val navController = rememberNavController()
         val backStackEntry by navController.currentBackStackEntryAsState()
         val currentDestination = SlipstreamDestination.entries.firstOrNull {

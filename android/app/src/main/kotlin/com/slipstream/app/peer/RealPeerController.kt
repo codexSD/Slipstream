@@ -23,6 +23,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -112,6 +113,23 @@ class RealPeerController(
 
     /** The one [openPairing] attempt currently waiting on a user decision, if any. */
     @Volatile private var pendingPairingDecision: CompletableDeferred<Boolean>? = null
+
+    /**
+     * The single in-flight pairing session, shared across collectors.
+     *
+     * A configuration change (rotation) destroys and recreates the Activity, so the pairing
+     * screen re-collects [openPairing]. Starting a second session there threw
+     * `IllegalStateException("a pairing window is already open")` out of the core and crashed
+     * the app. Re-entry is legitimate — the user rotated, they did not cancel — so the second
+     * collector rejoins this flow instead. `replay = 1` means it immediately re-receives the
+     * code it was already showing rather than reverting to a blank prompt.
+     */
+    private val pairingProgress = MutableSharedFlow<PairingProgress>(
+        replay = 1,
+        extraBufferCapacity = 8,
+    )
+    private val pairingLock = Mutex()
+    @Volatile private var pairingJob: Job? = null
 
     override suspend fun start() {
         withContext(dispatcher) {
@@ -393,28 +411,46 @@ class RealPeerController(
         }
     }
 
-    override fun openPairing(): Flow<PairingProgress> = callbackFlow {
-        val decision = CompletableDeferred<Boolean>()
-        pendingPairingDecision = decision
-        val job = launch(dispatcher) {
-            try {
-                val paired = peer.openPairingWindow(timeout = 120.seconds) { code ->
-                    trySend(PairingProgress.CodeReceived(code))
-                    // openPairingWindow's confirmCode is a plain blocking (String) -> Boolean —
-                    // not suspend — so the calling (IO) thread blocks here until confirmPairing()
-                    // completes the deferred, exactly per the addendum's bridging instructions.
-                    runBlocking { decision.await() }
+    // resetReplayCache is experimental but load-bearing here: without it a fresh pairing
+    // session replays the PREVIOUS session's code to its first collector, and the user could
+    // confirm against a stale number. Showing the wrong code is the one thing the six-digit
+    // comparison exists to prevent.
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    override fun openPairing(): Flow<PairingProgress> {
+        scope.launch {
+            pairingLock.withLock {
+                // Already pairing (e.g. the screen was recreated by a rotation): rejoin the
+                // running session rather than opening a second window.
+                if (pairingJob?.isActive == true) return@withLock
+
+                pairingProgress.resetReplayCache()
+
+                val decision = CompletableDeferred<Boolean>()
+                pendingPairingDecision = decision
+
+                pairingJob = scope.launch(dispatcher) {
+                    try {
+                        val paired = peer.openPairingWindow(timeout = 120.seconds) { code ->
+                            pairingProgress.tryEmit(PairingProgress.CodeReceived(code))
+                            // confirmCode is a plain blocking (String) -> Boolean, so the IO
+                            // thread parks here until confirmPairing() completes the deferred.
+                            runBlocking { decision.await() }
+                        }
+                        pairingProgress.tryEmit(PairingProgress.Completed(paired != null))
+                        _isPaired.value = peerStore.peer != null
+                    } catch (e: Exception) {
+                        // A failed pairing is a reportable outcome, not a crash. Closing the
+                        // flow with the exception propagated it to the collector on the main
+                        // dispatcher and killed the process.
+                        pairingProgress.tryEmit(PairingProgress.Completed(paired = false))
+                    } finally {
+                        pendingPairingDecision = null
+                    }
                 }
-                trySend(PairingProgress.Completed(paired != null))
-                _isPaired.value = peerStore.peer != null
-                close()
-            } catch (e: Exception) {
-                close(e)
-            } finally {
-                pendingPairingDecision = null
             }
         }
-        awaitClose { job.cancel() }
+
+        return pairingProgress
     }
 
     override suspend fun confirmPairing(accept: Boolean) {

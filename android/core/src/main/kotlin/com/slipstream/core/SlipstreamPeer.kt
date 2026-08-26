@@ -450,15 +450,25 @@ class SlipstreamPeer(
     private class PendingPairing(onConfirm: (String) -> Boolean) {
         val outcome = ArrayBlockingQueue<Boolean>(1)
 
-        /** True once the exchange got far enough to put a code in front of the user. Only then
-         * is a failure an actual *answer* rather than a connection that went nowhere. */
+        /**
+         * True once the user has actually *answered* — not merely been shown a code.
+         *
+         * Displaying the code is not an answer. The peer can hang up while the user is still
+         * looking at it (the initiator has its own timeout, and a probe or a stranger can drop
+         * at any moment). Treating "was asked" as the gate meant that disconnect surfaced as
+         * "Pairing declined." with Confirm greyed out, attributing to the user a decision they
+         * never made and killing a window that was still perfectly valid.
+         *
+         * Only a real answer, a success, or the window's own timeout may end the window.
+         */
         @Volatile
-        var userWasAsked: Boolean = false
+        var userAnswered: Boolean = false
             private set
 
         val confirmCode: (String) -> Boolean = { code ->
-            userWasAsked = true
-            onConfirm(code)
+            val accepted = onConfirm(code)
+            userAnswered = true
+            accepted
         }
     }
 
@@ -570,7 +580,7 @@ class SlipstreamPeer(
             // all on a network that drops multicast - and a stranger who drops mid-exchange
             // must not be able to cancel the user's attempt either. The window still closes
             // on a real outcome, on user cancel, and on its own 120-second timeout.
-            if (paired || pending.userWasAsked) pending.outcome.offer(paired)
+            if (paired || pending.userAnswered) pending.outcome.offer(paired)
         }
     }
 

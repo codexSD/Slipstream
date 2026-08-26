@@ -6,35 +6,44 @@ import kotlin.math.absoluteValue
 /** A single item in the transfer queue, tracking progress and formatting it for display.
  * [id] is the same id [TransferQueue.enqueue]/[TransferQueue.cancel] use — kept distinct from
  * [remotePath] (which is not guaranteed unique, e.g. re-enqueueing the same path from History)
- * so the Transfers screen's cancel action always cancels the right in-flight item. */
+ * so the Transfers screen's cancel action always cancels the right in-flight item.
+ *
+ * Deliberately **immutable**: every field participates in the generated `equals`, and each change
+ * produces a new instance. An earlier version kept progress and status in `var`s outside the
+ * constructor, so two successive states compared equal and `MutableStateFlow` conflated the
+ * "changed" emission away — the status pill and progress bar could never update in the UI. */
 data class TransferItem(
     val remotePath: String,
     val totalBytes: Long,
     val id: String = remotePath,
     val state: State = State.Transferring,
+    val bytesTransferred: Long = 0L,
+    val rateBytes: Double = 0.0,
+    val lastUpdateTimeMs: Long = 0L,
 ) {
     /** Terminal/in-flight state for the status pill (C4.4). */
     enum class State { Transferring, Complete, Failed }
 
-    var bytesTransferred: Long = 0L
-        private set
-    var rateBytes: Double = 0.0
-        private set
-    var lastUpdateTimeMs: Long = System.currentTimeMillis()
-        private set
-    var currentState: State = state
-        private set
+    /** Alias for [state], kept for call sites that read the status pill. */
+    val currentState: State get() = state
 
-    /** Marks this item Complete, for the brief moment (C4.4) between the transfer finishing and
-     * [TransferQueue] removing it from the active list. */
-    fun markComplete() {
-        currentState = State.Complete
-    }
+    /** Returns a copy marked Complete, for the brief moment (C4.4) between the transfer finishing
+     * and [TransferQueue] removing it from the active list. */
+    fun markComplete(): TransferItem = copy(state = State.Complete)
 
-    /** Marks this item Failed, same lifecycle as [markComplete]. */
-    fun markFailed() {
-        currentState = State.Failed
-    }
+    /** Returns a copy marked Failed, same lifecycle as [markComplete]. */
+    fun markFailed(): TransferItem = copy(state = State.Failed)
+
+    /** Returns a copy carrying progress from a [TransferProgress] event. The event also carries
+     * the authoritative total, which is not yet known when the item is first created. */
+    fun withProgress(progress: TransferProgress): TransferItem = copy(
+        bytesTransferred = progress.bytesTransferred,
+        totalBytes = if (progress.totalBytes > 0) progress.totalBytes else totalBytes,
+    )
+
+    /** Returns a copy with an updated measured transfer rate (bytes per second). */
+    fun withRate(rateBytes: Double, nowMs: Long = System.currentTimeMillis()): TransferItem =
+        copy(rateBytes = rateBytes, lastUpdateTimeMs = nowMs)
 
     /** Cumulative size display, e.g. "512 MB" or "1.0 / 4.0 GB" with matching units. */
     val sizeText: String
@@ -77,17 +86,6 @@ data class TransferItem(
                 else -> "< 1s left"
             }
         }
-
-    /** Updates progress from a TransferProgress event. */
-    fun apply(progress: TransferProgress) {
-        bytesTransferred = progress.bytesTransferred
-    }
-
-    /** Updates the measured transfer rate (bytes per second). */
-    fun updateRate(rateBytes: Double) {
-        this.rateBytes = rateBytes
-        lastUpdateTimeMs = System.currentTimeMillis()
-    }
 
     private fun formatBytes(bytes: Long): String {
         val gb = bytes.toDouble() / (1024 * 1024 * 1024)

@@ -97,10 +97,21 @@ class TransferQueue(private val scope: CoroutineScope = CoroutineScope(Dispatche
         }
     }
 
+    /** Replaces the active item for [id] with [transform]'s result and republishes the list.
+     * [TransferItem] is immutable, so every change is a *new* instance — which is precisely what
+     * makes `MutableStateFlow` see the list as changed and emit. Mutating a shared instance in
+     * place (the previous design) produced a list that compared equal to the last one, so the
+     * status pill and progress bar never updated on screen. */
+    private fun updateItem(id: String, transform: (TransferItem) -> TransferItem) {
+        val existing = activeTransfers[id] ?: return
+        activeTransfers[id] = transform(existing)
+        _activeTransfersState.value = activeTransfers.values.toList()
+    }
+
     private suspend fun processTransfer(transfer: QueuedTransfer) {
         try {
-            val item = TransferItem(remotePath = transfer.remotePath, totalBytes = 0L, id = transfer.id)
-            activeTransfers[transfer.id] = item
+            activeTransfers[transfer.id] =
+                TransferItem(remotePath = transfer.remotePath, totalBytes = 0L, id = transfer.id)
             _activeTransfersState.value = activeTransfers.values.toList()
 
             var lastReportTimeMs = System.currentTimeMillis()
@@ -112,34 +123,33 @@ class TransferQueue(private val scope: CoroutineScope = CoroutineScope(Dispatche
                     return@collect
                 }
 
-                item.apply(progress)
-
                 // Throttle progress emission to ~4 per second (~250ms)
                 val now = System.currentTimeMillis()
                 val elapsedMs = now - lastReportTimeMs
+                val report = elapsedMs >= 250 || progress.bytesTransferred == progress.totalBytes
 
-                if (elapsedMs >= 250 || progress.bytesTransferred == progress.totalBytes) {
-                    // Calculate rate if enough time has passed
-                    if (elapsedMs > 0) {
-                        val bytesDelta = progress.bytesTransferred - lastBytesTransferred
-                        val rateBytes = (bytesDelta.toDouble() / elapsedMs) * 1000.0
-                        item.updateRate(rateBytes)
-                        lastBytesTransferred = progress.bytesTransferred
-                        lastReportTimeMs = now
+                var rate: Double? = null
+                if (report && elapsedMs > 0) {
+                    val bytesDelta = progress.bytesTransferred - lastBytesTransferred
+                    rate = (bytesDelta.toDouble() / elapsedMs) * 1000.0
+                    lastBytesTransferred = progress.bytesTransferred
+                    lastReportTimeMs = now
+                }
+
+                if (report) {
+                    val measuredRate = rate
+                    updateItem(transfer.id) { current ->
+                        val advanced = current.withProgress(progress)
+                        if (measuredRate != null) advanced.withRate(measuredRate, now) else advanced
                     }
-
                     transfer.onProgress(progress)
-                    // Update UI state when reporting progress
-                    _activeTransfersState.value = activeTransfers.values.toList()
                 }
             }
 
-            item.markComplete()
-            _activeTransfersState.value = activeTransfers.values.toList()
+            updateItem(transfer.id) { it.markComplete() }
             transfer.onComplete()
         } catch (e: Throwable) {
-            activeTransfers[transfer.id]?.markFailed()
-            _activeTransfersState.value = activeTransfers.values.toList()
+            updateItem(transfer.id) { it.markFailed() }
             transfer.onError?.invoke(transfer.id, e)
         } finally {
             activeTransfers.remove(transfer.id)

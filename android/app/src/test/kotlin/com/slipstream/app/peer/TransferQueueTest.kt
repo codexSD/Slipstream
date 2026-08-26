@@ -23,10 +23,10 @@ class TransferQueueTest {
     @Test
     fun `formats progress with tabular size rate and eta`() {
         val item = TransferItem("test.bin", totalBytes = 4L * 1024 * 1024 * 1024)
-        // 1 GB transferred out of 4 GB
-        item.apply(TransferProgress(bytesTransferred = 1L shl 30, totalBytes = 4L shl 30))
-        // Update rate to 50 MB/s
-        item.updateRate(50.0 * 1024 * 1024)
+            // 1 GB transferred out of 4 GB
+            .withProgress(TransferProgress(bytesTransferred = 1L shl 30, totalBytes = 4L shl 30))
+            // Update rate to 50 MB/s
+            .withRate(50.0 * 1024 * 1024)
 
         // Format shows transferred/total with matching units
         // 1 GB = 1024 MB, 4 GB = 4096 MB, so at 50 MB/s: 3072 MB / 50 MB/s = 61.44 seconds
@@ -38,9 +38,69 @@ class TransferQueueTest {
     @Test
     fun `formats size without total when totalBytes is zero`() {
         val item = TransferItem("test.bin", totalBytes = 0L)
-        item.apply(TransferProgress(bytesTransferred = 512 * 1024 * 1024, totalBytes = 0L))
+            .withProgress(TransferProgress(bytesTransferred = 512 * 1024 * 1024, totalBytes = 0L))
 
         assertEquals("512.0 MB", item.sizeText)
+    }
+
+    /**
+     * Regression guard for the status pill never updating on screen. [TransferItem] used to keep
+     * its state in a `var` outside the constructor, so a mutated item compared *equal* to its own
+     * previous value and `MutableStateFlow` conflated the emission away. The list must change
+     * identity-wise on a Transferring -> Complete transition, and the flow must emit it.
+     */
+    @Test
+    fun `emits a new state when a transfer transitions to Complete`() = runBlocking {
+        val queue = TransferQueue()
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+
+        queue.activeTransfersState.test {
+            assertEquals(emptyList<TransferItem>(), awaitItem())
+
+            queue.enqueue(
+                id = "t1",
+                remotePath = "movie.mkv",
+                destination = createTempDirectory().toFile(),
+                onProgress = { },
+                onComplete = { },
+            ) {
+                flow {
+                    emit(TransferProgress(500, 1000))
+                    gate.await()
+                    emit(TransferProgress(1000, 1000))
+                }
+            }
+
+            // Appears as Transferring.
+            var seen = awaitItem()
+            while (seen.isEmpty()) seen = awaitItem()
+            assertEquals(TransferItem.State.Transferring, seen.single().currentState)
+
+            gate.complete(Unit)
+
+            // The Complete emission must actually arrive - this is what the old `equals` swallowed.
+            var complete = awaitItem()
+            while (complete.isNotEmpty() && complete.single().currentState != TransferItem.State.Complete) {
+                complete = awaitItem()
+            }
+            assertEquals(TransferItem.State.Complete, complete.single().currentState)
+            assertEquals(1000L, complete.single().bytesTransferred)
+
+            // ...and then it leaves the active list.
+            assertEquals(emptyList<TransferItem>(), awaitItem())
+            cancelAndIgnoreRemainingEvents()
+        }
+        queue.close()
+    }
+
+    /** A direct unit-level statement of the same property, independent of the queue's timing:
+     * two items differing only in status must not compare equal. */
+    @Test
+    fun `status is part of TransferItem equality`() {
+        val transferring = TransferItem("movie.mkv", totalBytes = 1000L)
+        assertFalse(transferring == transferring.markComplete())
+        assertFalse(transferring == transferring.markFailed())
+        assertFalse(transferring == transferring.withProgress(TransferProgress(10, 1000)))
     }
 
     @Test

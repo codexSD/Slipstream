@@ -2,6 +2,7 @@ package com.slipstream.app.permissions
 
 import android.app.AlertDialog
 import android.content.Context
+import android.os.Looper
 import android.os.PowerManager
 import android.provider.Settings
 import org.junit.Assert.assertEquals
@@ -38,6 +39,15 @@ class PermissionGateTest {
 
     private fun prefs() = activity.getSharedPreferences(PermissionGate.PREFS_NAME, Context.MODE_PRIVATE)
 
+    /** [AlertDialog]'s button `OnClickListener`s run via a posted `Runnable`, not synchronously
+     * on [android.view.View.performClick] - without idling the main looper afterwards, the
+     * click is recorded but [PermissionGate.Ask.onContinue] never actually runs, per Robolectric's
+     * own "Main looper has queued unexecuted runnables" hint. */
+    private fun clickAndIdle(dialog: AlertDialog, which: Int) {
+        dialog.getButton(which).performClick()
+        shadowOf(Looper.getMainLooper()).idle()
+    }
+
     // --- POST_NOTIFICATIONS -------------------------------------------------------------------
 
     @Test
@@ -56,7 +66,7 @@ class PermissionGateTest {
     fun `accepting the notifications rationale triggers the real permission request`() {
         gate.maybeRequestNotifications()
         val dialog = ShadowAlertDialog.getLatestAlertDialog()
-        dialog.getButton(AlertDialog.BUTTON_POSITIVE).performClick()
+        clickAndIdle(dialog, AlertDialog.BUTTON_POSITIVE)
 
         val requested = shadowOf(activity).lastRequestedPermission
         assertEquals(listOf(PermissionGate.POST_NOTIFICATIONS), requested?.requestedPermissions?.toList())
@@ -67,7 +77,7 @@ class PermissionGateTest {
     fun `declining the notifications rationale never requests the permission`() {
         gate.maybeRequestNotifications()
         val dialog = ShadowAlertDialog.getLatestAlertDialog()
-        dialog.getButton(AlertDialog.BUTTON_NEGATIVE).performClick()
+        clickAndIdle(dialog, AlertDialog.BUTTON_NEGATIVE)
 
         assertNull(shadowOf(activity).lastRequestedPermission)
     }
@@ -77,7 +87,7 @@ class PermissionGateTest {
     fun `notifications are asked at most once per install, even after being declined`() {
         gate.maybeRequestNotifications()
         val firstDialog = ShadowAlertDialog.getLatestAlertDialog()
-        firstDialog.getButton(AlertDialog.BUTTON_NEGATIVE).performClick()
+        clickAndIdle(firstDialog, AlertDialog.BUTTON_NEGATIVE)
 
         gate.maybeRequestNotifications()
 
@@ -113,7 +123,7 @@ class PermissionGateTest {
     fun `battery rationale is shown, and accepting it opens the ignore-battery-optimizations settings screen`() {
         gate.maybeRequestBatteryExemption()
         val dialog = requireNotNull(ShadowAlertDialog.getLatestAlertDialog()) { "rationale must be shown" }
-        dialog.getButton(AlertDialog.BUTTON_POSITIVE).performClick()
+        clickAndIdle(dialog, AlertDialog.BUTTON_POSITIVE)
 
         val started = shadowOf(activity).nextStartedActivity
         assertEquals(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, started?.action)
@@ -137,7 +147,7 @@ class PermissionGateTest {
     fun `battery exemption is asked at most once per install`() {
         gate.maybeRequestBatteryExemption()
         val firstDialog = ShadowAlertDialog.getLatestAlertDialog()
-        firstDialog.getButton(AlertDialog.BUTTON_NEGATIVE).performClick()
+        clickAndIdle(firstDialog, AlertDialog.BUTTON_NEGATIVE)
 
         gate.maybeRequestBatteryExemption()
 
@@ -162,7 +172,7 @@ class PermissionGateTest {
     @Config(sdk = [30])
     fun `accepting the storage rationale opens the all-files-access settings screen`() {
         gate.maybeRequestStorage()
-        ShadowAlertDialog.getLatestAlertDialog().getButton(AlertDialog.BUTTON_POSITIVE).performClick()
+        clickAndIdle(ShadowAlertDialog.getLatestAlertDialog(), AlertDialog.BUTTON_POSITIVE)
 
         val started = shadowOf(activity).nextStartedActivity
         assertEquals(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, started?.action)
@@ -181,7 +191,7 @@ class PermissionGateTest {
     fun `storage is asked at most once per install`() {
         gate.maybeRequestStorage()
         val firstDialog = ShadowAlertDialog.getLatestAlertDialog()
-        firstDialog.getButton(AlertDialog.BUTTON_NEGATIVE).performClick()
+        clickAndIdle(firstDialog, AlertDialog.BUTTON_NEGATIVE)
 
         gate.maybeRequestStorage()
 
@@ -200,7 +210,7 @@ class PermissionGateTest {
         val dialog = requireNotNull(ShadowAlertDialog.getLatestAlertDialog())
         assertEquals("Stay notified", shadowOf(dialog).title.toString())
 
-        dialog.getButton(AlertDialog.BUTTON_POSITIVE).performClick()
+        clickAndIdle(dialog, AlertDialog.BUTTON_POSITIVE)
 
         // Dismissing the first must reveal the next (storage, since it's still API 30+ eligible
         // and unasked) rather than leaving nothing on screen.

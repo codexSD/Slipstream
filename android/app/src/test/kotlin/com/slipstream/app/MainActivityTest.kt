@@ -1,6 +1,7 @@
 package com.slipstream.app
 
 import android.app.AlertDialog
+import android.os.Looper
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -30,6 +31,9 @@ class MainActivityTest {
         val dialog = ShadowAlertDialog.getLatestAlertDialog()
         assertTrue("a rationale dialog must be shown before the OS prompt", dialog != null)
         dialog.getButton(AlertDialog.BUTTON_POSITIVE).performClick()
+        // AlertDialog button clicks run via a posted Runnable, not synchronously - see
+        // PermissionGateTest's `clickAndIdle` helper doc for the same note.
+        shadowOf(Looper.getMainLooper()).idle()
 
         val requested = shadowOf(controller.get()).lastRequestedPermission
         assertEquals(

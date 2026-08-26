@@ -92,7 +92,7 @@ class PermissionGate(private val activity: ComponentActivity) {
     private fun pendingStorageAsk(): Ask? {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return null
         if (alreadyAsked(KEY_ASKED_STORAGE)) return null
-        if (Environment.isExternalStorageManager()) return null
+        if (isExternalStorageManager()) return null
 
         markAsked(KEY_ASKED_STORAGE)
         return Ask(
@@ -104,6 +104,22 @@ class PermissionGate(private val activity: ComponentActivity) {
             openAllFilesAccessSettings()
         }
     }
+
+    /**
+     * [Environment.isExternalStorageManager] queries the system's `StorageManager` for the
+     * device's storage volumes, which on a real device always returns at least the primary
+     * volume - but under Robolectric (and conceivably some real OEM edge case with zero
+     * reported volumes) it can throw (`ArrayIndexOutOfBoundsException` indexing an empty list)
+     * rather than returning a boolean. A thrown exception here would crash `onCreate` outright,
+     * which is far worse than the "not granted" this treats it as - a real device never actually
+     * hits this branch.
+     */
+    private fun isExternalStorageManager(): Boolean =
+        try {
+            Environment.isExternalStorageManager()
+        } catch (e: Exception) {
+            false
+        }
 
     private fun openAllFilesAccessSettings() {
         val perAppIntent = Intent(

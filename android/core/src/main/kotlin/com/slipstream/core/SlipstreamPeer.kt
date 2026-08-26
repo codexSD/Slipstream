@@ -720,7 +720,13 @@ class SlipstreamPeer(
      * [activePulls] for the duration so a network change mid-pull triggers a resume instead of
      * abandoning it.
      */
-    fun pullFile(peerControlEndpoint: InetSocketAddress, remotePath: String, destination: File, streams: Int = 4): PartFile {
+    fun pullFile(
+        peerControlEndpoint: InetSocketAddress,
+        remotePath: String,
+        destination: File,
+        streams: Int = 4,
+        onProgress: ((Long) -> Unit)? = null,
+    ): PartFile {
         val first = negotiatePull(peerControlEndpoint, remotePath, streams)
         val transferId = first.session.transferId
         val part = PartFile.openOrCreate(destination, transferId, first.size, DEFAULT_CHUNK_SIZE)
@@ -732,7 +738,9 @@ class SlipstreamPeer(
         withPullClaim(transferId) {
             activePulls[transferId] = ActivePull(part, streams, remotePath, peerControlEndpoint)
             try {
-                transferEngine.pull(part, streams) { negotiatePull(peerControlEndpoint, remotePath, streams).session }
+                transferEngine.pull(part, streams, onProgress) {
+                    negotiatePull(peerControlEndpoint, remotePath, streams).session
+                }
             } finally {
                 activePulls.remove(transferId)
                 // close() releases the file descriptor AND performs the final debounced sidecar

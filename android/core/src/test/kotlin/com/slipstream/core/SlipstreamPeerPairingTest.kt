@@ -142,6 +142,39 @@ class SlipstreamPeerPairingTest {
     }
 
     @Test
+    fun `pullFile reports cumulative progress for a real loopback pull`() {
+        val (sender, senderRoot) = peerWithRoot("Sender")
+        val (receiver, receiverRoot) = peerWithRoot("Receiver")
+        try {
+            pair(sender, receiver)
+
+            val source = File(senderRoot, "movie.bin")
+            val bytes = ByteArray(3 * 1024 * 1024) { (it % 253).toByte() }
+            source.writeBytes(bytes)
+
+            val progress = mutableListOf<Long>()
+            val destination = File(receiverRoot, "pulled/movie.bin")
+            val part = receiver.pullFile(
+                requireNotNull(sender.controlEndpoint),
+                "movie.bin",
+                destination,
+                streams = 2,
+            ) { progress.add(it) }
+            part.close()
+
+            assertTrue("pulled file must exist", destination.exists())
+            assertEquals(source.readBytes().toList(), destination.readBytes().toList())
+            assertTrue(
+                "onProgress must deliver a non-empty cumulative byte count for the pull",
+                progress.isNotEmpty() && progress.sum() >= source.length(),
+            )
+        } finally {
+            sender.close()
+            receiver.close()
+        }
+    }
+
+    @Test
     fun `a push offer that escapes the root is refused`() {
         val (sender, senderRoot) = peerWithRoot("Sender")
         val (receiver, receiverRoot) = peerWithRoot("Receiver")

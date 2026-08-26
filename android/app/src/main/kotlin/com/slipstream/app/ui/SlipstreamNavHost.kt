@@ -62,12 +62,15 @@ internal fun PeerConnectionState.toMeridianStatus(): MeridianStatus = when (this
     PeerConnectionState.Idle -> MeridianStatus.Neutral
 }
 
-/** The pill's required text label (spec §12: colour is never the only cue). [PeerStatus.band]
- * is named for [PeerConnectionState.Degraded] specifically, per Plan 5's shell. */
+/** The pill's required text label (spec §12: colour is never the only cue). Wording for
+ * [PeerConnectionState.Searching] and [PeerConnectionState.Degraded] follows spec §15's worked
+ * examples exactly ("Phone not on this network. Searching…" and "2.4 GHz — slower link" — band
+ * first, so the observed speed is explained rather than mysterious). Connected/Lost/Idle have no
+ * worked example in §15, so their wording here is this task's own choice. */
 internal fun pillLabel(status: PeerStatus): String = when (status.state) {
     PeerConnectionState.Connected -> status.peerName ?: "Connected"
-    PeerConnectionState.Searching -> "Searching…"
-    PeerConnectionState.Degraded -> status.band?.let { "Degraded — $it" } ?: "Degraded"
+    PeerConnectionState.Searching -> "Phone not on this network. Searching…"
+    PeerConnectionState.Degraded -> status.band?.let { "$it — slower link" } ?: "Degraded"
     PeerConnectionState.Lost -> "Disconnected"
     PeerConnectionState.Idle -> "Not connected"
 }

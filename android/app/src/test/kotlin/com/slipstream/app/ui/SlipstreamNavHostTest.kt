@@ -67,7 +67,7 @@ class SlipstreamNavHostTest {
     }
 
     @Test
-    fun `the degraded pill names the band`() {
+    fun `the degraded pill names the band, per spec §15's worked example`() {
         compose.setContent {
             SlipstreamNavHost(
                 peerStatus = MutableStateFlow(
@@ -75,6 +75,6 @@ class SlipstreamNavHostTest {
                 ),
             )
         }
-        compose.onNodeWithText("Degraded — 2.4 GHz").assertIsDisplayed()
+        compose.onNodeWithText("2.4 GHz — slower link").assertIsDisplayed()
     }
 }

@@ -29,7 +29,7 @@ namespace Slipstream.Core;
 public sealed class SlipstreamPeer : IAsyncDisposable
 {
     private readonly string _stateDirectory;
-    private readonly INetworkInfo _networkInfo = new NetworkInfo();
+    private readonly INetworkInfo _networkInfo;
     private readonly MulticastStrategy _multicast;
     private readonly DiscoveryCoordinator _coordinator;
     private readonly PairingCoordinator _pairingCoordinator;
@@ -40,8 +40,15 @@ public sealed class SlipstreamPeer : IAsyncDisposable
     private Func<string, CancellationToken, Task<bool>>? _confirmCode;
     private NetworkAddressChangedEventHandler? _networkChangedHandler;
 
-    public SlipstreamPeer(string stateDirectory, string displayName)
+    /// <param name="networkInfo">
+    /// The local-network source every server binds and every discovery strategy is seeded from.
+    /// Defaults to the live <see cref="NetworkInfo"/>, so existing callers are unaffected; a
+    /// caller that knows better than the ranking heuristic — or a test that needs a fixed
+    /// network — supplies its own.
+    /// </param>
+    public SlipstreamPeer(string stateDirectory, string displayName, INetworkInfo? networkInfo = null)
     {
+        _networkInfo = networkInfo ?? new NetworkInfo();
         _stateDirectory = stateDirectory;
         Identity = DeviceIdentity.LoadOrCreate(stateDirectory, displayName);
         Peers = new PairedPeerStore(stateDirectory);

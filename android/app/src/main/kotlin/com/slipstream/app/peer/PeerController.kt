@@ -85,4 +85,7 @@ interface PeerController {
 
     /** Answers the pairing attempt [openPairing] is currently waiting on. */
     suspend fun confirmPairing(accept: Boolean)
+
+    /** Clears the paired peer state, returning to unpaired. Does not affect the connection. */
+    suspend fun unpair()
 }

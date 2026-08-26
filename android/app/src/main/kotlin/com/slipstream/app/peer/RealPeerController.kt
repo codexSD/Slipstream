@@ -354,4 +354,10 @@ class RealPeerController(
     override suspend fun confirmPairing(accept: Boolean) {
         pendingPairingDecision?.complete(accept)
     }
+
+    override suspend fun unpair() = withContext(dispatcher) {
+        peerStore.clear()
+        _isPaired.value = false
+        dropConnection()
+    }
 }

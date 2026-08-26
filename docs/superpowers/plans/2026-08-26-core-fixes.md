@@ -534,3 +534,144 @@ whether the result is *verified* or only *plausible*, since none can be fully pr
 hardware. Say which plainly.
 
 For fixes 5 and 6, state the **ten-run** result explicitly. A single green run is not a result.
+
+---
+
+# Round 5 — closed
+
+> **Outcome.** The defect Round 4's hardware section flagged as "unowned and should be the next
+> fix" is fixed. `NetworkInfo.Current()` returned the **first** up, non-loopback interface with a
+> `LanGuard`-local IPv4 address — which on any machine with Hyper-V installed is the virtual
+> switch, not the adapter that can reach a phone. This is a **Plan 1 Task 8 design error, of
+> exactly the same class Android already hit and fixed** in `AndroidNetworkInfo` (see
+> `2026-08-25-android-core-deviations.md`, "AndroidNetworkInfo bound listening sockets to the
+> wrong interface when hosting a hotspot"). Both implementations were specified to read *an*
+> interface; neither was specified to choose *the right one*. Android found it on hardware first;
+> the Windows side was the mirror image waiting to be found.
+>
+> Measured on the live PC before the fix:
+>
+> ```
+> Alias                        IP              Prefix  Gateway
+> vEthernet (Default Switch)   192.168.112.1     20    (none)          <- Current() picked this
+> Local Area Connection* 4     169.254.178.75    16    (none)
+> Ethernet 3                   10.212.134.200    32    (none)
+> Ethernet                     192.168.43.1      24    192.168.43.0
+> Wi-Fi                        10.199.176.38     24    10.199.176.137  <- the correct one
+> ```
+>
+> The consequences compound rather than degrade: `LocalNetwork.Gateway` is `null`, so
+> `GatewayProbeStrategy` — the one strategy that reliably finds the phone when the PC is on its
+> hotspot, because the phone *is* the gateway — cannot run at all; and `PrefixLength` is `/20`, so
+> `SubnetMath.EnumerateHosts` correctly refuses to sweep and `SubnetSweepStrategy` yields nothing.
+> With multicast already dead on Android softAP, the ladder is starved before it starts. This
+> defeats **paired** discovery, not only pairing.
+
+## Fix 10 — `NetworkInfo` picked a virtual adapter and starved all discovery (design error, Plan 1 Task 8)
+
+**Files:** `windows/src/Slipstream.Core/Net/NetworkInfo.cs`,
+`windows/src/Slipstream.Core/SlipstreamPeer.cs`
+
+Candidates are now **ranked**, not taken in enumeration order. Four documented keys, lowest wins,
+each ordering only candidates already equal on every key above it:
+
+1. **Has a usable default gateway** — the decisive signal: an interface you can actually route on.
+2. **Physical beats virtual** — Hyper-V/WSL switches, VPN and TAP/TUN tunnels, Bluetooth PANs.
+3. **Non-APIPA beats APIPA** — `169.254.*` means no DHCP ever happened on this adapter.
+4. **Lowest interface index, then ordinal interface id** — a stable, documented, reproducible
+   tie-break, as opposed to enumeration order, which is the bug itself.
+
+Two things the measured table forced that are worth recording:
+
+- **"Has a gateway" had to become "has a *usable* gateway."** The `Ethernet` row above reports its
+  gateway as `192.168.43.0` — the `/24`'s own **network address**, not a host. Accepting a
+  reported gateway uncritically would have let that adapter win the decisive key outright. A
+  gateway now counts only when it is a LAN-local IPv4 host address inside the interface's own
+  subnet — not the network or broadcast address, and not the interface's own address.
+- **The Windows-as-hotspot-host case is the mirror image of the Android AP fix, and ranking
+  gateways first threatens it.** When the *PC* hosts the hotspot, its AP interface has no default
+  gateway, exactly like Android's AP side, so key 1 demotes it. It stays reachable because it is
+  the only thing left when nothing has a gateway, and keys 2 and 3 then float it above every
+  virtual switch and every APIPA adapter — but only because Windows' hosted-network adapter
+  (named `Local Area Connection* N`, described as "Microsoft Wi-Fi **Direct Virtual** Adapter") is
+  explicitly carved out of the virtual-adapter test. Without that carve-out the word "Virtual" in
+  a vendor description would have re-created, on Windows, precisely the bug Android closed.
+  Android resolved the same tension differently — it ranks by interface-name band first and uses
+  "serving beats client" as a *tie-break within* the band — because on Android the AP side is the
+  common case, whereas on Windows being a client is. The two disagree on ordering for a reason,
+  not by accident.
+
+`SubnetMath`'s `/24` bound is **unchanged**. That guard was correct; the input was wrong.
+
+**Also made injectable.** `SlipstreamPeer` hard-constructed `new NetworkInfo()`, so no test could
+supply a `LocalNetwork` and no caller could override a bad pick — the exact obstacle Round 4's
+hardware run had to work around by hand. It now takes an optional `INetworkInfo` defaulting to the
+live implementation, so every existing call site is unaffected.
+
+Selection is a pure function over an `InterfaceCandidate` list, so the whole ranking is unit
+testable without a real `NetworkInterface`.
+
+## Verification — Round 5
+
+| Suite | Result |
+| --- | --- |
+| `dotnet test windows/Slipstream.sln` | **325 Core** (312 + 13 new) + **122 App**, 0 failures |
+
+**Tests added** (13, all written first and confirmed red against the pre-fix code — 9 failed on
+behaviour once the seam existed, and the injection pair could not compile at all):
+
+- the candidate set matching the measured table above selects **Wi-Fi `10.199.176.38/24`, gateway
+  `10.199.176.137`** — not the `vEthernet` switch
+- that same selection can actually run S2 and S4 (non-null gateway, non-empty host enumeration) —
+  the two consequences the old behaviour destroyed, asserted directly
+- an interface with a gateway beats one without
+- a physical adapter beats a virtual one when both have gateways
+- an APIPA-only interface loses to any real one, and an APIPA one *with* a gateway still loses to a
+  routable one
+- ties resolve to the lowest interface index, and index ties to the ordinal interface id — both
+  asserted against the reversed enumeration too, so enumeration order cannot be what produced the
+  answer
+- the hosted-hotspot interface still wins when nothing has a gateway (the Windows AP case)
+- the S1 cache key is stable across a new DHCP lease on the same subnet and distinct across networks
+- `SlipstreamPeer` accepts an injected `INetworkInfo`, and still defaults to the live one
+
+## Hardware result — **`Current()` verified, full pairing NOT achieved**
+
+**Verified on the live PC**, via a throwaway driver against the real `NetworkInfo` (no repo debug
+command was added):
+
+```
+  Ethernet 3                  10.212.134.200 /32  gw=       Fortinet SSL VPN Virtual Ethernet Adapter
+  vEthernet (Default Switch)  192.168.112.1  /20  gw=       Hyper-V Virtual Ethernet Adapter
+  Wi-Fi                       10.199.176.38  /24  gw=10.199.176.137  Intel(R) Wi-Fi 6E AX211 160MHz
+  Loopback Pseudo-Interface 1 127.0.0.1      /8   gw=       Software Loopback Interface 1
+
+Current() => addr=10.199.176.38 gw=10.199.176.137 prefix=/24
+Sweepable hosts: 254
+```
+
+Both consequences are closed: `GatewayProbeStrategy` now has a gateway to probe, and
+`SubnetSweepStrategy` now has 254 hosts to sweep instead of zero. The `Ethernet` and
+`Local Area Connection* 4` rows of the original table were down at re-measurement time; the two
+adapters that *were* present and previously outranked Wi-Fi (`vEthernet`, and the Fortinet VPN
+tunnel) are both correctly rejected.
+
+**Not achieved: an end-to-end pairing with matching six-digit codes.** The blocker is
+**pre-existing, documented, and unrelated to this fix** — it is Fix 1's TLS-interop gap, still
+open. Measured against the real phone at `10.199.176.137` in this session:
+
+- all three ports listen on the correct hotspot interface (`adb shell` on `/proc/net/tcp` shows
+  `10.199.176.137:53321/53322/53323` in state `LISTEN`) — the Android AP-binding fix is holding
+- raw TCP to the control port connects in **3–53 ms**, repeatably
+- a .NET `SslStream` client handshake against that same open socket **times out after 10 s**
+- an `openssl s_client` handshake with a client certificate against it also produced no completed
+  handshake in this session
+
+Because no control channel can be established from .NET at all, no pairing exchange could be
+started and no codes could be compared. The phone's UI was not driven.
+
+**Confidence:** the interface-selection fix is **verified** — measured directly against this
+machine's real adapters, with the previously-winning virtual adapters present and now losing, and
+the ranking itself covered by tests confirmed red beforehand. Whether it *unblocks pairing* is
+**plausible, not verified**: it removes the starvation this round is about, but Fix 1's TLS gap
+sits downstream of it and is still open.

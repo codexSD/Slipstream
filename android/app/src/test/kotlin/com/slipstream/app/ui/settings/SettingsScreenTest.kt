@@ -6,6 +6,7 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.test.core.app.ApplicationProvider
 import com.slipstream.app.peer.PairingProgress
 import com.slipstream.app.peer.PeerConnectionState
@@ -99,7 +100,7 @@ class SettingsScreenTest {
     }
 
     @Test
-    fun `unpaired device displays pair button`() {
+    fun `pair button calls openPairing when clicked`() {
         peerController = SpyPeerController(paired = false)
         compose.setContent {
             MeridianTheme {
@@ -109,15 +110,17 @@ class SettingsScreenTest {
                 )
             }
         }
-        // Note: Detailed button click tests are limited with scrollable content;
-        // the button composition and callback wiring is verified through:
-        // 1. Composition test ensuring it renders without error
-        // 2. Source code review verifying onClick handler calls peerController.openPairing()
-        // 3. Manual integration testing with full app
+        // Click the pair button via scroll-to (handles scrollable content)
+        compose.onNodeWithTag("pair-button").performScrollTo().performClick()
+        compose.waitForIdle()
+
+        // Verify that openPairing was called on the controller
+        assertTrue("openPairing should be called after clicking pair button",
+                   peerController.openPairingCalled)
     }
 
     @Test
-    fun `paired device displays unpair button`() {
+    fun `unpair button calls unpair when clicked`() {
         peerController = SpyPeerController(paired = true)
         compose.setContent {
             MeridianTheme {
@@ -127,10 +130,12 @@ class SettingsScreenTest {
                 )
             }
         }
-        // Note: Detailed button click tests are limited with scrollable content;
-        // the button composition and callback wiring is verified through:
-        // 1. Composition test ensuring it renders without error
-        // 2. Source code review verifying onClick handler calls peerController.unpair()
-        // 3. Manual integration testing with full app
+        // Click the unpair button via scroll-to (handles scrollable content)
+        compose.onNodeWithTag("unpair-button").performScrollTo().performClick()
+        compose.waitForIdle()
+
+        // Verify that unpair was called on the controller
+        assertTrue("unpair should be called after clicking unpair button",
+                   peerController.unpairCalled)
     }
 }

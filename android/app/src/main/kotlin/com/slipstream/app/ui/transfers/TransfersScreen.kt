@@ -16,7 +16,10 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.flow.StateFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
@@ -45,9 +48,10 @@ import com.slipstream.meridian.component.MeridianStatusPill
 fun TransfersScreen(
     peerController: PeerController,
     modifier: Modifier = Modifier,
-    transfers: List<TransferItem> = emptyList(),
+    transfersState: StateFlow<List<TransferItem>>? = null,
 ) {
     val colors = MeridianTheme.colors
+    val transfers by transfersState?.collectAsStateWithLifecycle() ?: androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(emptyList()) }
 
     if (transfers.isEmpty()) {
         // Empty state: no active transfers

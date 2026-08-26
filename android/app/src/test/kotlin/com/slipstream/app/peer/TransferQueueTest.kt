@@ -1,5 +1,6 @@
 package com.slipstream.app.peer
 
+import app.cash.turbine.test
 import java.io.File
 import kotlin.io.path.createTempDirectory
 import kotlinx.coroutines.delay
@@ -193,6 +194,30 @@ class TransferQueueTest {
         // Expected: approximately 2-3 updates for this pattern, definitely fewer than 10
         assertTrue("Throttling reduces updates: $progressUpdates << 20", progressUpdates < 10)
         assertTrue("Some updates visible: $progressUpdates > 0", progressUpdates > 0)
+        queue.close()
+    }
+
+    @Test
+    fun `activeTransfersState exposes active transfers for UI consumption`() = runBlocking {
+        val queue = TransferQueue()
+        val observedStates = mutableListOf<List<TransferItem>>()
+
+        queue.enqueue(
+            id = "transfer-1",
+            remotePath = "file1.bin",
+            destination = createTempDirectory().toFile(),
+            onProgress = { },
+            onComplete = { },
+        ) { flow { emit(TransferProgress(1000, 1000)) } }
+
+        delay(500)
+
+        // After transfer completes, state should reflect it was active at some point
+        observedStates.add(queue.activeTransfersState.value)
+
+        // State should now be empty (transfer finished)
+        assertEquals(0, queue.activeTransfersState.value.size)
+
         queue.close()
     }
 

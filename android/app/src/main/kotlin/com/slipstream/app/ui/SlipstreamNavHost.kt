@@ -18,6 +18,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
@@ -30,6 +31,7 @@ import com.slipstream.app.peer.PeerConnectionState
 import com.slipstream.app.peer.PeerController
 import com.slipstream.app.peer.PeerStatus
 import com.slipstream.app.peer.SettingsStore
+import com.slipstream.app.SlipstreamApplication
 import com.slipstream.app.ui.home.HomeScreen
 import com.slipstream.app.ui.settings.SettingsScreen
 import com.slipstream.app.ui.transfers.TransfersScreen
@@ -90,6 +92,9 @@ internal fun pillLabel(status: PeerStatus): String = when (status.state) {
 @Composable
 fun SlipstreamNavHost(peerController: PeerController, settingsStore: SettingsStore) {
     val peerStatus = peerController.status
+    val context = LocalContext.current
+    val transferQueue = (context.applicationContext as SlipstreamApplication).transferQueue
+
     MeridianTheme {
         val navController = rememberNavController()
         val backStackEntry by navController.currentBackStackEntryAsState()
@@ -148,6 +153,7 @@ fun SlipstreamNavHost(peerController: PeerController, settingsStore: SettingsSto
                 composable(SlipstreamDestination.Transfers.route) {
                     TransfersScreen(
                         peerController = peerController,
+                        transfersState = transferQueue.activeTransfersState,
                         modifier = Modifier.testTag("screen-content"),
                     )
                 }

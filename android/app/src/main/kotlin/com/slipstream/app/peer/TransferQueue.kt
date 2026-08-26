@@ -8,6 +8,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
@@ -34,6 +37,10 @@ class TransferQueue(private val scope: CoroutineScope = CoroutineScope(Dispatche
     private val activeTransfers = mutableMapOf<String, TransferItem>()
     private val cancelledIds = mutableSetOf<String>()
     private var processingJob: Job? = null
+
+    // Expose current queue state as a read-only StateFlow for UI consumption
+    private val _activeTransfersState = MutableStateFlow<List<TransferItem>>(emptyList())
+    val activeTransfersState: StateFlow<List<TransferItem>> = _activeTransfersState.asStateFlow()
 
     init {
         startProcessing()
@@ -94,6 +101,7 @@ class TransferQueue(private val scope: CoroutineScope = CoroutineScope(Dispatche
         try {
             val item = TransferItem(transfer.remotePath, 0L)
             activeTransfers[transfer.id] = item
+            _activeTransfersState.value = activeTransfers.values.toList()
 
             var lastReportTimeMs = System.currentTimeMillis()
             var lastBytesTransferred = 0L
@@ -121,6 +129,8 @@ class TransferQueue(private val scope: CoroutineScope = CoroutineScope(Dispatche
                     }
 
                     transfer.onProgress(progress)
+                    // Update UI state when reporting progress
+                    _activeTransfersState.value = activeTransfers.values.toList()
                 }
             }
 
@@ -129,6 +139,7 @@ class TransferQueue(private val scope: CoroutineScope = CoroutineScope(Dispatche
             transfer.onError?.invoke(transfer.id, e)
         } finally {
             activeTransfers.remove(transfer.id)
+            _activeTransfersState.value = activeTransfers.values.toList()
         }
     }
 

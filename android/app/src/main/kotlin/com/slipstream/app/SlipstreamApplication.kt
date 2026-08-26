@@ -18,6 +18,7 @@ import com.slipstream.app.peer.ForwardingClipboardSink
 import com.slipstream.app.peer.PeerController
 import com.slipstream.app.peer.RealPeerController
 import com.slipstream.app.peer.SettingsStore
+import com.slipstream.app.peer.TransferQueue
 import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -65,6 +66,12 @@ class SlipstreamApplication : Application() {
     val settingsStore: SettingsStore by lazy {
         SettingsStore(this)
     }
+
+    /** Manages queued file transfers: serial execution, failure resilience, progress throttling.
+     * Exposed as an application-scoped lazy singleton so the Transfers screen can observe live
+     * queue state via [TransferQueue.activeTransfersState]. Reachable from any composable via
+     * `(LocalContext.current.applicationContext as SlipstreamApplication).transferQueue`. */
+    val transferQueue: TransferQueue by lazy { TransferQueue() }
 
     override fun onCreate() {
         super.onCreate()

@@ -14,6 +14,7 @@ import com.slipstream.core.discovery.AndroidMulticastLock
 import com.slipstream.core.discovery.EndpointCache
 import com.slipstream.core.discovery.MulticastLockHandle
 import com.slipstream.core.discovery.NoopMulticastLock
+import com.slipstream.core.SlipstreamLog
 import com.slipstream.core.files.FileBrowser
 import com.slipstream.core.identity.DeviceIdentity
 import com.slipstream.core.identity.PairedPeerStore
@@ -199,13 +200,56 @@ class SlipstreamApplication : Application() {
             peerStore = PairedPeerStore(storageDir),
             networkInfo = AndroidNetworkInfo(this),
             endpointCache = EndpointCache(storageDir),
-            rootDirectory = getExternalFilesDir(null) ?: filesDir,
+            rootDirectory = sharedRoot(),
             clipboardSink = clipboardSink,
             onPlayRequested = { file -> playSink.onLocalFile(file, FileBrowser.mimeFor(file.name)) },
             onPlayUrlRequested = { url, mime -> playSink.onRemoteUrl(url, mime ?: "video/*") },
             multicastLock = androidMulticastLock(),
         )
     }
+
+    /**
+     * What this device actually offers the peer.
+     *
+     * This was `getExternalFilesDir(null)` — the app's own private sandbox under
+     * `Android/data/`, which is empty and which the user cannot put anything into without a
+     * file manager that can reach it. The peer would browse the phone, get zero entries, and
+     * have no way to tell "no permission" apart from "nothing here". The whole reason this app
+     * requests MANAGE_EXTERNAL_STORAGE is to share real storage, so share real storage.
+     *
+     * Falls back to the sandbox when the permission has not been granted: an empty listing is
+     * a poor experience but a working one, where pointing at /sdcard unpermitted would just
+     * throw on every request.
+     */
+    private fun sharedRoot(): File {
+        val sandbox = getExternalFilesDir(null) ?: filesDir
+        val granted = hasAllFilesAccess()
+
+        // Every one of these can fail on a device (or an emulated environment) with no external
+        // storage mounted at all. Sharing the sandbox is a working fallback; crashing on startup
+        // because storage was unavailable is not.
+        val root = if (granted) {
+            runCatching { android.os.Environment.getExternalStorageDirectory() }.getOrNull() ?: sandbox
+        } else {
+            sandbox
+        }
+
+        val detail = runCatching {
+            "exists=${root.exists()}, readable=${root.canRead()}, entries=${root.list()?.size ?: -1}"
+        }.getOrElse { "could not be inspected: ${it.javaClass.simpleName}" }
+
+        SlipstreamLog.i(
+            "storage",
+            "all-files access ${if (granted) "granted" else "NOT granted"}, sharing $root ($detail)",
+        )
+        return root
+    }
+
+    /** MANAGE_EXTERNAL_STORAGE is not a runtime permission — it is a per-app special access
+     * the user grants in Settings, so it is checked, never requested with requestPermissions. */
+    private fun hasAllFilesAccess(): Boolean = runCatching {
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.R || android.os.Environment.isExternalStorageManager()
+    }.getOrDefault(false)
 
     /**
      * The real `WifiManager.MulticastLock`. The manifest already requests

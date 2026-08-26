@@ -6,6 +6,7 @@ import com.slipstream.core.discovery.DiscoveryCoordinator
 import com.slipstream.core.identity.DeviceIdentity
 import com.slipstream.core.identity.PairedPeerStore
 import com.slipstream.core.net.LocalNetwork
+import com.slipstream.core.net.MutableNetworkBinder
 import com.slipstream.core.net.NetworkInfo
 import com.slipstream.core.transfer.PartFile
 import java.io.File
@@ -86,6 +87,7 @@ class SlipstreamPeerNetworkChangeTest {
         onTeardown: () -> Unit = {},
         onResumeAttempt: (UUID) -> Unit = {},
         dir: File = createTempDirectory().toFile(),
+        networkBinder: MutableNetworkBinder = MutableNetworkBinder(),
     ) = SlipstreamPeer(
         identity = DeviceIdentity.createNew("Test Device"),
         peerStore = PairedPeerStore(dir),
@@ -98,7 +100,41 @@ class SlipstreamPeerNetworkChangeTest {
         mediaPort = ports.third,
         onTeardown = onTeardown,
         onResumeAttempt = onResumeAttempt,
+        networkBinder = networkBinder,
     )
+
+    /**
+     * `start(network)` seeds the dedup state so the first `onNetworkChanged` for that same
+     * network is recognised as a repeat — but it did not seed the binder to match. The result,
+     * whenever `activeNetwork` at service start already WAS the Wi-Fi network: the real
+     * `onAvailable(wifi)` was dismissed as a duplicate, and the binder stayed null forever.
+     *
+     * Nothing looked wrong. The servers bind through `networkInfo`, not the binder, so inbound
+     * connections kept working and the PC could reach the phone. Only the phone's *outbound*
+     * sockets were affected: unbound, they follow the default network — cellular on a phone
+     * with mobile data — so every LAN address became unreachable and discovery found nothing,
+     * on a device that was plainly online. It also silently disabled spec §11 layer 3.
+     */
+    @Test
+    fun `start binds sockets to the network it was started for, not just the dedup state`() {
+        val networkInfo = FixedNetworkInfo(LocalNetwork(LOOPBACK, null, 32, "k"))
+        val binder = MutableNetworkBinder()
+        val wifi = ShadowNetwork.newInstance(101)
+        val peer = peer(networkInfo, threeFreePorts(), networkBinder = binder)
+
+        try {
+            peer.start(wifi)
+
+            assertEquals("start() must bind sockets to the network it was handed", wifi, binder.network)
+
+            // And the repeat event for that same network must still be a no-op, which is the
+            // behaviour the dedup seed exists for in the first place.
+            peer.onNetworkChanged(wifi)
+            assertEquals(wifi, binder.network)
+        } finally {
+            peer.close()
+        }
+    }
 
     @Test
     fun `overlapping network changes never escape as an exception and never leak a server`() {

@@ -13,10 +13,10 @@ namespace Slipstream.App.Tests;
 public class BrowseViewModelTests
 {
     private static FileEntry Dir(string name) =>
-        new(name, $"/storage/{name}", 0, DateTimeOffset.UtcNow, true, null, null);
+        new(name, $"/storage/{name}", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), true, null, null);
 
     private static FileEntry File(string name, string mime, long size = 100) =>
-        new(name, $"/storage/{name}", size, DateTimeOffset.UtcNow, false, mime, null);
+        new(name, $"/storage/{name}", size, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), false, mime, null);
 
     private static FakePeerHost FakeHostReturning(IReadOnlyList<FileEntry> entries, bool truncated = false)
     {

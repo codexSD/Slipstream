@@ -178,6 +178,16 @@ class SlipstreamPeer(
     fun start(network: android.net.Network? = null) {
         mediaTokenVault.clear()
         networkChangeLock.withLock {
+            // Bind outbound sockets to this network too, not only the dedup state below.
+            // Seeding one without the other meant that whenever the caller's activeNetwork
+            // already WAS the Wi-Fi network, the genuine onAvailable(wifi) that followed was
+            // dismissed as a duplicate and the binder was left null forever. Servers still
+            // bound correctly (they go through networkInfo, not the binder), so inbound
+            // traffic worked and the device looked healthy — while every outbound socket fell
+            // back to the default network, which on a phone with mobile data is cellular, and
+            // could not reach a single LAN address. Discovery simply found nothing.
+            SlipstreamLog.i("network", "start() binding sockets to ${network ?: "(none — default routing)"}")
+            networkBinder.network = network
             startServers()
             // Seed the dedup state with what was just brought up. Without this the very first
             // onNetworkChanged callback after start() - which, for the network start() already
@@ -213,6 +223,12 @@ class SlipstreamPeer(
         val bindAddress = requireNotNull(networkInfo.current()) {
             "No local network available to bind Slipstream's servers to"
         }.localAddress
+
+        SlipstreamLog.i(
+            "servers",
+            "binding to ${bindAddress.hostAddress} " +
+                "(control=$controlPort bulk=$bulkPort media=$mediaPort)",
+        )
 
         val server = ControlServer(identity, peerStore, networkInfo, port = controlPort, pairingWindow)
         server.onPeerConnected = { conn -> thread(isDaemon = true) { serveConnection(conn) } }
@@ -637,6 +653,11 @@ class SlipstreamPeer(
             // in-flight inbound transfer and live control session for no reason at all.
             if (hasAppliedNetwork && network == appliedNetwork) return
 
+            // Which network every socket is about to be pinned to (spec §11 layer 3). Binding
+            // to the wrong one — cellular, on a phone that has both — makes every LAN address
+            // unreachable while the device looks perfectly online, and there was no way to see
+            // which one had been chosen.
+            SlipstreamLog.i("network", "binding sockets to ${network ?: "(none)"}")
             networkBinder.network = network
 
             // Only a *successful* apply is recorded (below). If startServers() throws, or the

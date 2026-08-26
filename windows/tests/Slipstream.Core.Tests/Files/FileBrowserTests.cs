@@ -1,9 +1,38 @@
+using System.Text.Json;
+using Slipstream.Core.Control;
 using Slipstream.Core.Files;
 
 namespace Slipstream.Core.Tests.Files;
 
 public class FileBrowserTests : IDisposable
 {
+    /// <summary>
+    /// The two implementations never agreed on the listing schema. Windows serialized
+    /// `modified` (an ISO timestamp) while Android's parser required `mtimeMs` (epoch millis)
+    /// and threw NoSuchElementException on every single listing — so browsing the PC from the
+    /// phone could not work, and never had. The spec (§6) names the field `mtime`; Android
+    /// matched it, Windows drifted. Serialization is the contract between two codebases that
+    /// share no types, so it gets a test.
+    /// </summary>
+    [Fact]
+    public void A_listed_entry_serializes_the_fields_the_peer_actually_reads()
+    {
+        Make("a.txt", "hi");
+
+        var entry = _browser.List(_dir).Entries.Single(e => e.Name == "a.txt");
+        var json = JsonSerializer.Serialize(entry, ControlMessage.Json);
+
+        using var parsed = JsonDocument.Parse(json);
+        var fields = parsed.RootElement;
+
+        Assert.Equal("a.txt", fields.GetProperty("name").GetString());
+        Assert.Equal(2, fields.GetProperty("size").GetInt64());
+        Assert.False(fields.GetProperty("isDirectory").GetBoolean());
+
+        // The field the Android parser requires, as epoch milliseconds.
+        Assert.True(fields.GetProperty("mtimeMs").GetInt64() > 0);
+    }
+
     private readonly string _dir = Directory.CreateTempSubdirectory("slipstream-browse-").FullName;
     private readonly FileBrowser _browser = new();
 

@@ -167,7 +167,7 @@ class RealPeerController(
                     continue
                 }
                 SlipstreamLog.i("supervisor", "link is down, attempt ${attempt + 1}")
-                if (connectOnce()) {
+                if (connectIfStillOffline()) {
                     attempt = 0
                 } else {
                     delay(RECONNECT_BACKOFFS_MS[minOf(attempt, RECONNECT_BACKOFFS_MS.size - 1)])
@@ -215,6 +215,24 @@ class RealPeerController(
 
     /** One discover-and-connect attempt. Updates [status] along the way; never throws. */
     private suspend fun connectOnce(): Boolean = connectLock.withLock { connectOnceLocked() }
+
+    /**
+     * [supervise]'s form of [connectOnce], which re-tests the link *inside* [connectLock].
+     *
+     * The supervisor decides to act while holding nothing, so by the time it wins the lock the
+     * link is often already up — the pairing connect, or `start`, got there first. Reconnecting
+     * anyway was actively harmful: it set [PeerConnectionState.Searching] over a perfectly good
+     * connection, which made [offline] true, which made the user's very next `list` fail with
+     * "not connected" while the log showed a healthy link. It also replaced the socket the peer
+     * was already using, so the desktop reported the connection lost every few seconds.
+     */
+    private suspend fun connectIfStillOffline(): Boolean = connectLock.withLock {
+        if (!offline()) {
+            SlipstreamLog.i("supervisor", "link came back on its own, standing down")
+            return@withLock true
+        }
+        connectOnceLocked()
+    }
 
     private suspend fun connectOnceLocked(): Boolean {
         _status.value = _status.value.copy(state = PeerConnectionState.Searching)

@@ -577,11 +577,22 @@ public sealed class PeerHost : IPeerHost, IAsyncDisposable
     {
         try
         {
+            SlipstreamLog.Info("peer", "starting listeners and discovery");
             await _peer.StartAsync(_lifetime.Token);
+            SlipstreamLog.Info("peer", "listeners stopped");
         }
         catch (OperationCanceledException)
         {
             // Normal shutdown via DisposeAsync.
+        }
+        catch (Exception e)
+        {
+            // This task is not awaited until disposal, so anything thrown here used to vanish:
+            // the window would open, the servers would not be listening, and the phone would
+            // simply never find the PC — with nothing anywhere saying why. A port already held
+            // by a previous instance is the usual cause, and it is invisible without this.
+            SlipstreamLog.Warn("peer", "listeners failed to start — this device is not reachable", e);
+            throw;
         }
     }
 

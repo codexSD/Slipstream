@@ -1,13 +1,28 @@
+using System.Text.Json.Serialization;
 namespace Slipstream.Core.Files;
 
+/// <summary>
+/// One entry in a listing, and the wire contract with the Android peer (spec §6:
+/// name, size, mtime, isDir, mime, thumbnail token).
+///
+/// <see cref="MtimeMs"/> is epoch milliseconds, not a <see cref="DateTimeOffset"/>: the two
+/// codebases share no types, and this one shipped serializing an ISO `modified` string that
+/// Android's parser — which requires `mtimeMs` — threw on for every listing ever sent. Epoch
+/// millis is what the spec names and what both sides can agree on without a date format in
+/// the middle. <see cref="Modified"/> stays for local sorting and display.
+/// </summary>
 public sealed record FileEntry(
     string Name,
     string Path,
     long Size,
-    DateTimeOffset Modified,
+    long MtimeMs,
     bool IsDirectory,
     string? Mime,
-    string? ThumbnailToken);
+    string? ThumbnailToken)
+{
+    [JsonIgnore]
+    public DateTimeOffset Modified => DateTimeOffset.FromUnixTimeMilliseconds(MtimeMs);
+}
 
 public sealed record ListResult(string Path, IReadOnlyList<FileEntry> Entries, bool Truncated);
 
@@ -57,8 +72,11 @@ public sealed class FileBrowser
             .Where(d => d.IsReady)
             .Select(d => new FileEntry(
                 string.IsNullOrWhiteSpace(d.VolumeLabel) ? d.Name : $"{d.VolumeLabel} ({d.Name})",
-                d.RootDirectory.FullName, 0, DateTimeOffset.MinValue, true, null, null))
+                d.RootDirectory.FullName, 0, 0, true, null, null))
             .ToList();
+
+    private static long ToMtimeMs(DateTime lastWriteUtc) =>
+        new DateTimeOffset(lastWriteUtc, TimeSpan.Zero).ToUnixTimeMilliseconds();
 
     private static FileEntry? Describe(string path)
     {
@@ -68,12 +86,12 @@ public sealed class FileBrowser
             {
                 var info = new DirectoryInfo(path);
                 return new FileEntry(info.Name, info.FullName, 0,
-                    new DateTimeOffset(info.LastWriteTimeUtc, TimeSpan.Zero), true, null, null);
+                    ToMtimeMs(info.LastWriteTimeUtc), true, null, null);
             }
 
             var file = new FileInfo(path);
             return new FileEntry(file.Name, file.FullName, file.Length,
-                new DateTimeOffset(file.LastWriteTimeUtc, TimeSpan.Zero), false,
+                ToMtimeMs(file.LastWriteTimeUtc), false,
                 MimeFor(file.Extension), null);
         }
         catch (UnauthorizedAccessException)

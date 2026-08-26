@@ -1,5 +1,6 @@
 package com.slipstream.core.discovery
 
+import com.slipstream.core.SlipstreamLog
 import com.slipstream.core.net.NetworkInfo
 import kotlin.time.Duration
 import kotlinx.coroutines.Deferred
@@ -26,14 +27,29 @@ class DiscoveryCoordinator(
 ) {
 
     suspend fun discover(timeout: Duration): DiscoveryResult? {
-        val network = networkInfo.current() ?: return null
+        val network = networkInfo.current()
+        if (network == null) {
+            // Not a rare edge case: this is what "no peer found" looks like when the app has
+            // simply picked no interface, which is indistinguishable from a peer that isn't
+            // there unless it is said out loud.
+            SlipstreamLog.i("discovery", "no usable local network — nothing to search on")
+            return null
+        }
+        SlipstreamLog.i(
+            "discovery",
+            "searching ${network.localAddress.hostAddress}/${network.prefixLength} " +
+                "(${network.key}) with ${strategies.size} strategies: " +
+                strategies.joinToString(",") { it.name },
+        )
 
         return coroutineScope {
             var pending = strategies.map { strategy ->
                 strategy to async {
                     try {
                         withTimeoutOrNull(timeout) { strategy.find(network) }
+                            .also { SlipstreamLog.i("discovery", "${strategy.name}: ${it ?: "nothing"}") }
                     } catch (e: Exception) {
+                        SlipstreamLog.w("discovery", "${strategy.name} threw", e)
                         null
                     }
                 }

@@ -1,5 +1,6 @@
 package com.slipstream.app
 
+import com.slipstream.core.SlipstreamLog
 import com.slipstream.core.SlipstreamPeer
 import com.slipstream.core.control.ClipboardSink
 import com.slipstream.core.control.PinnedTls
@@ -84,13 +85,31 @@ internal class PeerWiring(
      * TCP connect) can't tell a Slipstream peer from any other listener on that port.
      */
     fun probe(): PeerProbe = PeerProbe { endpoint ->
+        // Only the fingerprint comparison is logged, never the connect attempt itself: a /24
+        // sweep makes 254 of those and 253 are meant to fail. Reaching this callback means
+        // something really was listening and really did present a certificate, which is rare
+        // and always worth knowing about — especially when it is the right host with the wrong
+        // identity, which is otherwise indistinguishable from nothing being there at all.
+        var sawCertificate = false
         try {
             connect(endpoint, identity, networkBinder) { fingerprint ->
-                peerStore.peer?.fingerprint == fingerprint
+                sawCertificate = true
+                val expected = peerStore.peer?.fingerprint
+                val matches = expected == fingerprint
+                if (!matches) {
+                    SlipstreamLog.i(
+                        "probe",
+                        "$endpoint presented $fingerprint but this device is paired with " +
+                            (expected ?: "nobody") + " — ignoring it",
+                    )
+                }
+                matches
             }.use {
+                SlipstreamLog.i("probe", "$endpoint is our paired peer")
                 DiscoveredPeer(endpoint)
             }
         } catch (e: Exception) {
+            if (sawCertificate) SlipstreamLog.w("probe", "$endpoint failed after presenting a certificate", e)
             null
         }
     }

@@ -50,7 +50,17 @@ class PeerForegroundService : Service() {
         // Told which network this bring-up belongs to, so the first onNetworkChanged callback
         // for that same network - which carries no new information - is recognized as a repeat
         // instead of tearing down and rebuilding everything start() just brought up.
-        val active = runCatching { connectivityManager.activeNetwork }.getOrNull()
+        //
+        // Filtered through the same rules as the callback: activeNetwork is very often the
+        // cellular network on a phone with mobile data, especially when the Wi-Fi it is
+        // actually on has no internet. Handing that to start() pins every outbound socket to
+        // cellular - exactly what qualifiesAsLocalNetwork's own remarks warn about, and what
+        // spec §11 layer 3 forbids - so no LAN address is reachable and discovery finds
+        // nothing at all. A non-qualifying network becomes null: no binding, and the real
+        // onAvailable(wifi) that follows is then correctly seen as new rather than a repeat.
+        val active = runCatching { connectivityManager.activeNetwork }
+            .getOrNull()
+            ?.takeIf { qualifiesAsLocalNetwork(connectivityManager, it) }
         app.peer.start(active)
 
         startPeerControllerLifecycle(app.peerController, scope)

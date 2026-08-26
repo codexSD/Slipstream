@@ -2,6 +2,7 @@ package com.slipstream.app.peer
 
 import app.cash.turbine.test
 import java.io.File
+import kotlin.concurrent.thread
 import kotlin.io.path.createTempDirectory
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -52,6 +53,54 @@ class RealPeerControllerTest {
         }
     }
 
+    /**
+     * The rig every other test uses is paired *before* the controller exists, which is exactly
+     * why this never showed up: on a real device the service starts unpaired, its one
+     * `reconnect()` fails (there is no fingerprint to pin against yet), and the user pairs
+     * afterwards. Nothing then re-attempted the connection, so the phone sat on "Disconnected"
+     * — and every `list()` failed — while the freshly-paired PC saw a healthy link of its own.
+     */
+    @Test
+    fun `connects on its own once pairing succeeds, having started unpaired`() = runBlocking {
+        val rig = TwoPeers.start(createTempDirectory().toFile(), alreadyPaired = false)
+        val controller = controller(rig)
+        try {
+            // Unpaired: connecting cannot work, there is no peer fingerprint to pin against.
+            assertTrue(!withTimeout(60_000) { controller.reconnect() })
+            assertEquals(PeerConnectionState.Lost, controller.status.value.state)
+
+            // The peer initiates; this device is the responder, as on real hardware.
+            val localEndpoint = requireNotNull(rig.local.controlEndpoint)
+            thread(isDaemon = true) {
+                repeat(100) {
+                    if (rig.local.isPairingWindowOpen) return@repeat
+                    Thread.sleep(20)
+                }
+                rig.remote.initiatePairing(
+                    java.net.InetSocketAddress(java.net.InetAddress.getByName("127.0.0.1"), localEndpoint.port),
+                ) { true }
+            }
+
+            withTimeout(60_000) {
+                controller.openPairing().test {
+                    assertTrue(awaitItem() is PairingProgress.CodeReceived)
+                    controller.confirmPairing(accept = true)
+                    assertTrue((awaitItem() as PairingProgress.Completed).paired)
+                }
+            }
+
+            // The whole point: no one calls reconnect() here. The controller must get itself
+            // back on the wire, because nothing in the app is watching to do it for it.
+            withTimeout(60_000) {
+                controller.status.first { it.state == PeerConnectionState.Connected }
+            }
+            assertTrue(controller.list(rig.sharedDir).isSuccess)
+        } finally {
+            rig.local.close()
+            rig.remote.close()
+        }
+    }
+
     @Test
     fun `reports Lost then recovers on reconnect`() = runBlocking {
         val rig = TwoPeers.start(createTempDirectory().toFile())
@@ -74,6 +123,58 @@ class RealPeerControllerTest {
                 assertEquals(PeerConnectionState.Searching, awaitItem().state)
                 assertEquals(PeerConnectionState.Connected, awaitItem().state)
             }
+        } finally {
+            rig.local.close()
+            rig.remote.close()
+        }
+    }
+
+    /**
+     * These two messages were one and the same, and that cost real debugging time: a phone that
+     * had simply never connected reported "That folder is no longer there.", which reads as a
+     * problem with the path the user picked rather than with the link. Every `list()` failure
+     * looked like a missing folder no matter the actual cause.
+     */
+    @Test
+    fun `a list with no connection says so, rather than blaming the folder`() = runBlocking {
+        val rig = TwoPeers.start(createTempDirectory().toFile())
+        val controller = controller(rig)
+        try {
+            // Never started: there is no control connection at all.
+            val result = controller.list(rig.sharedDir)
+
+            assertTrue(result.isFailure)
+            assertEquals(NOT_CONNECTED_MESSAGE, result.exceptionOrNull()?.message)
+        } finally {
+            rig.local.close()
+            rig.remote.close()
+        }
+    }
+
+    /**
+     * `reconnect()` used to be the only thing that could get back on the wire, and the app calls
+     * it exactly once, at service start (`PeerForegroundService.startPeerControllerLifecycle`).
+     * So a link that dropped any time afterwards — a Wi-Fi switch, the PC sleeping, the hotspot
+     * cycling — stayed dropped until the user killed and reopened the app.
+     */
+    @Test
+    fun `recovers from a dropped link on its own, with nobody calling reconnect`() = runBlocking {
+        val rig = TwoPeers.start(createTempDirectory().toFile())
+        val controller = controller(rig)
+        try {
+            withTimeout(20_000) { controller.start() }
+            assertEquals(PeerConnectionState.Connected, controller.status.value.state)
+
+            controller.debugCloseConnectionForTesting()
+            withTimeout(20_000) {
+                controller.status.first { it.state == PeerConnectionState.Lost }
+            }
+
+            // No reconnect() call here — that is the whole point.
+            withTimeout(60_000) {
+                controller.status.first { it.state == PeerConnectionState.Connected }
+            }
+            assertTrue(controller.list(rig.sharedDir).isSuccess)
         } finally {
             rig.local.close()
             rig.remote.close()

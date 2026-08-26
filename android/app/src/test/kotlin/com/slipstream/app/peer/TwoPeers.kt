@@ -101,6 +101,9 @@ class TwoPeers private constructor(
              * [remote] without needing a whole second [RealPeerController] wrapping it - see
              * `RealPeerControllerTest`'s `streamOnPeer` tests. */
             onPlayUrlRequested: (url: String, mime: String?) -> Unit = { _, _ -> },
+            /** Leave false to get the two peers wired up but NOT yet paired, so a test can drive
+             * the real pairing handshake itself. Every other test wants the rig pre-paired. */
+            alreadyPaired: Boolean = true,
         ): TwoPeers {
             val localDir = File(tempDir, "local").apply { mkdirs() }
             val remoteDir = File(tempDir, "remote").apply { mkdirs() }
@@ -147,7 +150,7 @@ class TwoPeers private constructor(
             )
             localPeer.start()
 
-            pair(localPeer, remotePeer)
+            if (alreadyPaired) pair(localPeer, remotePeer)
 
             val sharedDirName = "shared"
             File(remoteDir, sharedDirName).apply { mkdirs() }

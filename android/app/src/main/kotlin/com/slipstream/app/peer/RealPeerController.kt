@@ -48,12 +48,20 @@ import kotlinx.serialization.json.long
 /** The direct, no-apology (spec §15) message surfaced for a failed [PeerController.list]. */
 private const val LIST_FAILED_MESSAGE = "That folder is no longer there."
 
+/** Spec §15 voice for "there is no link right now", kept distinct from [LIST_FAILED_MESSAGE]:
+ * collapsing the two told the user their folder had vanished when the real answer was that the
+ * device had never connected — a wrong explanation is worse than a vague one. */
+internal const val NOT_CONNECTED_MESSAGE = "Not connected to your computer."
+
 /** Spec §15 voice for [RealPeerController.sendClipboard] refusing text over [CLIPBOARD_MAX_BYTES]
  * before it is ever sent - the receiving peer's own cap (design.md §6/§10) would otherwise drop
  * it silently on arrival, which is a worse experience than refusing it up front. */
 internal const val CLIPBOARD_TOO_LARGE_MESSAGE = "That's too much text to send - copy something under 64 KB."
 
 private const val HEARTBEAT_INTERVAL_MS = 750L
+
+/** How often [RealPeerController.supervise] re-checks when there is nothing to do. */
+private const val IDLE_POLL_MS = 1_000L
 private val RECONNECT_BACKOFFS_MS = longArrayOf(1_000, 2_000, 4_000, 8_000, 15_000)
 
 /**
@@ -131,10 +139,47 @@ class RealPeerController(
     private val pairingLock = Mutex()
     @Volatile private var pairingJob: Job? = null
 
+    @Volatile private var supervisorJob: Job? = null
+
+    /**
+     * Keeps trying to get back on the wire for as long as this controller lives.
+     *
+     * The app calls [reconnect] exactly once, at service start
+     * (`PeerForegroundService.startPeerControllerLifecycle`). That was the only path back to
+     * [PeerConnectionState.Connected], so anything that dropped the link afterwards — a Wi-Fi
+     * switch, the PC sleeping, the hotspot cycling — left the device stranded until the user
+     * restarted the app. Retrying is cheap (each failed attempt is already gated by discovery's
+     * own 10s timeout) and it is what the user would do by hand anyway.
+     *
+     * Skipped entirely while unpaired (there is no fingerprint to pin against, so connecting
+     * cannot succeed) and while a pairing window is open (that connection is the peer's to make).
+     */
+    private fun supervise() {
+        if (supervisorJob?.isActive == true) return
+        supervisorJob = scope.launch {
+            var attempt = 0
+            while (isActive) {
+                val shouldTry = _isPaired.value && offline() && pairingJob?.isActive != true
+                if (!shouldTry) {
+                    attempt = 0
+                    delay(IDLE_POLL_MS)
+                    continue
+                }
+                if (connectOnce()) {
+                    attempt = 0
+                } else {
+                    delay(RECONNECT_BACKOFFS_MS[minOf(attempt, RECONNECT_BACKOFFS_MS.size - 1)])
+                    attempt++
+                }
+            }
+        }
+    }
+
     override suspend fun start() {
         withContext(dispatcher) {
             peer.start()
             connectOnce()
+            supervise()
         }
     }
 
@@ -152,6 +197,7 @@ class RealPeerController(
     }
 
     override suspend fun reconnect(): Boolean = withContext(dispatcher) {
+        supervise()
         dropConnection()
         for (backoffMs in RECONNECT_BACKOFFS_MS) {
             if (connectOnce()) return@withContext true
@@ -160,8 +206,15 @@ class RealPeerController(
         connectOnce()
     }
 
+    /** Serialises connect attempts: [supervise]'s loop, an explicit [reconnect], and the
+     * post-pairing connect can all fire at once, and two concurrent discoveries racing to
+     * assign [connection] would leak whichever socket lost. */
+    private val connectLock = Mutex()
+
     /** One discover-and-connect attempt. Updates [status] along the way; never throws. */
-    private suspend fun connectOnce(): Boolean {
+    private suspend fun connectOnce(): Boolean = connectLock.withLock { connectOnceLocked() }
+
+    private suspend fun connectOnceLocked(): Boolean {
         _status.value = _status.value.copy(state = PeerConnectionState.Searching)
         val discovery = try {
             peer.discover(timeout = 10.seconds)
@@ -240,7 +293,14 @@ class RealPeerController(
         error("unreachable")
     }
 
+    /** Whether a request can be attempted at all. [PeerConnectionState.Degraded] still carries
+     * traffic; every other non-[PeerConnectionState.Connected] state does not. */
+    private fun offline(): Boolean = connection == null ||
+        (_status.value.state != PeerConnectionState.Connected &&
+            _status.value.state != PeerConnectionState.Degraded)
+
     override suspend fun list(path: String): Result<ListResult> = withContext(dispatcher) {
+        if (offline()) return@withContext Result.failure(IllegalStateException(NOT_CONNECTED_MESSAGE))
         try {
             val reply = sendRequest(SessionMessageTypes.LIST, JsonObject(mapOf("path" to JsonPrimitive(path))))
             if (reply.type != SessionMessageTypes.LIST_OK) {
@@ -261,7 +321,8 @@ class RealPeerController(
             val truncated = payload["truncated"]?.jsonPrimitive?.boolean ?: false
             Result.success(ListResult(entries, truncated))
         } catch (e: Exception) {
-            Result.failure(IllegalStateException(LIST_FAILED_MESSAGE))
+            // The link can drop mid-request — re-check rather than assuming the path was bad.
+            Result.failure(IllegalStateException(if (offline()) NOT_CONNECTED_MESSAGE else LIST_FAILED_MESSAGE))
         }
     }
 
@@ -438,6 +499,15 @@ class RealPeerController(
                         }
                         pairingProgress.tryEmit(PairingProgress.Completed(paired != null))
                         _isPaired.value = peerStore.peer != null
+
+                        // Pairing is the moment connecting first becomes possible: until a
+                        // fingerprint is in the store, ControlClient.connect has nothing to pin
+                        // against and always fails. PeerForegroundService runs its single
+                        // reconnect() at startup, which for a fresh install is before this
+                        // point — so without connecting here the device stays Lost forever
+                        // while the peer, which initiated and holds its own link, shows
+                        // connected. Nothing else in the app watches for this.
+                        if (paired != null && connection == null) connectOnce()
                     } catch (e: Exception) {
                         // A failed pairing is a reportable outcome, not a crash. Closing the
                         // flow with the exception propagated it to the collector on the main

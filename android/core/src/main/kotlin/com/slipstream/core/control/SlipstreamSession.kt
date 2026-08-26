@@ -3,6 +3,7 @@ package com.slipstream.core.control
 import com.slipstream.core.files.FileBrowser
 import com.slipstream.core.identity.DeviceIdentity
 import com.slipstream.core.media.MediaTokenVault
+import com.slipstream.core.media.ThumbnailProvider
 import com.slipstream.core.transfer.TokenVault
 import java.io.File
 import java.net.InetSocketAddress
@@ -33,9 +34,12 @@ object SessionMessageTypes {
     const val STAT_OK = "stat.ok"
     const val PULL_REQUEST = "pull.request"
     const val PULL_OK = "pull.ok"
+    const val PUSH_OFFER = "push.offer"
+    const val PUSH_OK = "push.ok"
     const val STREAM_REQUEST = "stream.request"
     const val STREAM_OK = "stream.ok"
     const val CLIPBOARD = "clipboard"
+    const val PLAY = "play"
     const val ERROR = "error"
 }
 
@@ -63,7 +67,46 @@ class SlipstreamSession(
     private val mediaTokenVault: MediaTokenVault,
     private val mediaPort: () -> Int,
     private val clipboardSink: ClipboardSink,
+    /** Generates cached thumbnails for image entries returned by `list` (design.md §9). Null
+     * (the default) leaves `list` thumbnail-free - every existing test/caller that never heard
+     * of thumbnails keeps working unchanged. [com.slipstream.core.SlipstreamPeer] is the only
+     * production caller that supplies a real one. */
+    private val thumbnailProvider: ThumbnailProvider? = null,
     private val onBulkIssued: (transferId: UUID, sourceFile: File) -> Unit = { _, _ -> },
+    /** Fired once an inbound `push.offer` has been accepted (destination resolved, `push.ok`
+     * about to be sent) so the caller ([com.slipstream.core.SlipstreamPeer]) can start actually
+     * receiving the bytes from the sender's own [com.slipstream.core.transfer.BulkServer]. Pure
+     * side-effect callback, same discipline as [onBulkIssued]: dispatch never itself touches a
+     * socket or spawns a thread. */
+    private val onPushOffered: (
+        transferId: UUID,
+        token: UUID,
+        endpoint: InetSocketAddress,
+        size: Long,
+        destination: File,
+    ) -> Unit = { _, _, _, _, _ -> },
+    /** Fired for an inbound `play` (design.md §8, push-to-play) whose payload carries a `path`
+     * field: the peer wants this device to start playing a file *this device already owns*,
+     * resolved against [rootDirectory] exactly like `list`/`stat`/`pull.request`. Pure forwarding
+     * callback, same discipline as [onBulkIssued]/[onPushOffered] - dispatch never itself
+     * launches playback UI.
+     *
+     * Kept exactly as Task 2.5 built it (including this doc's original path-based framing) for
+     * backward compatibility with its existing tests. Task 11's addendum found this shape alone
+     * cannot implement design.md §8's actual push-to-play flow ("phone picks a file, PC starts
+     * playing it"): the file being played there is owned by the *sender*, not resolvable against
+     * *this* device's own root at all. [onPlayUrlRequested] is the shape real push-to-play
+     * actually uses; this one is preserved as a fallback for a `play` message that only ever
+     * carries `path` (e.g. an older peer, or a future same-device-owns-it use of `play`). */
+    private val onPlayRequested: (file: File) -> Unit = {},
+    /** Fired for an inbound `play` whose payload carries a `url` field instead of `path`: the
+     * peer (the file's owner) has already issued itself a stream token and is handing this
+     * device a ready-to-open URL to *its own* media server, per design.md §8's actual push-to-play
+     * flow ("Phone requests a stream token for the file [from itself]. Phone sends `play` [to the
+     * PC] with the URL."). [mime] is whatever the sender's own `stream.request` resolved the
+     * file's MIME type to; null only if the sender's message omitted it. Preferred over
+     * [onPlayRequested] whenever both a `url` and a `path` are (implausibly) present. */
+    private val onPlayUrlRequested: (url: String, mime: String?) -> Unit = { _, _ -> },
 ) {
     fun dispatch(message: ControlMessage): ControlMessage? = when (message.type) {
         SessionMessageTypes.HELLO -> helloOk(message)
@@ -71,8 +114,10 @@ class SlipstreamSession(
         SessionMessageTypes.LIST -> list(message)
         SessionMessageTypes.STAT -> stat(message)
         SessionMessageTypes.PULL_REQUEST -> pullRequest(message)
+        SessionMessageTypes.PUSH_OFFER -> pushOffer(message)
         SessionMessageTypes.STREAM_REQUEST -> streamRequest(message)
         SessionMessageTypes.CLIPBOARD -> clipboard(message)
+        SessionMessageTypes.PLAY -> play(message)
         // Unknown type: ignored, never disconnects (see class doc).
         else -> null
     }
@@ -109,6 +154,7 @@ class SlipstreamSession(
         }
         val listing = FileBrowser.list(dir)
         val entries = listing.entries.map { e ->
+            val thumbnailToken = thumbnailTokenFor(dir, e)
             JsonObject(
                 mapOf(
                     "name" to JsonPrimitive(e.name),
@@ -116,6 +162,7 @@ class SlipstreamSession(
                     "mtimeMs" to JsonPrimitive(e.mtimeMs),
                     "isDirectory" to JsonPrimitive(e.isDirectory),
                     "mime" to (e.mime?.let { JsonPrimitive(it) } ?: JsonNull),
+                    "thumbnailToken" to (thumbnailToken?.let { JsonPrimitive(it) } ?: JsonNull),
                 ),
             )
         }
@@ -126,6 +173,20 @@ class SlipstreamSession(
             ),
         )
         return ControlMessage(type = SessionMessageTypes.LIST_OK, id = message.id, payload = payload)
+    }
+
+    /** Cheap thumbnail issuance for one `list` entry: only ever decodes an actual image file
+     * ([ThumbnailProvider.generate] is image-only per its own doc), never attempted-and-failed
+     * on every non-image file in a directory that can have hundreds of entries. Returns null
+     * (no field on the wire) whenever there's no [thumbnailProvider], the entry isn't a regular
+     * image file, or generation failed for this particular file. */
+    private fun thumbnailTokenFor(dir: File, entry: com.slipstream.core.files.FileEntry): String? {
+        val provider = thumbnailProvider ?: return null
+        if (entry.isDirectory) return null
+        if (entry.mime?.startsWith("image/") != true) return null
+        val source = File(dir, entry.name)
+        val thumbnail = provider.generate(source) ?: return null
+        return mediaTokenVault.issue(thumbnail, "image/jpeg").value.toString()
     }
 
     private fun stat(message: ControlMessage): ControlMessage {
@@ -173,6 +234,52 @@ class SlipstreamSession(
         return ControlMessage(type = SessionMessageTypes.PULL_OK, id = message.id, payload = payload)
     }
 
+    /**
+     * Inbound `push.offer`: the sender already owns the bytes and has already issued its own
+     * bulk token for them (the opposite of `pull.request`, where the *responder* issues the
+     * token) - this side's only job is to resolve where the file lands, make room for it, and
+     * accept. This project's trust model is "pair once, then fully silent" (design.md §2): a
+     * push from the one paired peer is always accepted, with no interactive prompt.
+     */
+    private fun pushOffer(message: ControlMessage): ControlMessage {
+        val payload = message.payload
+        val path = payload?.get("path")?.jsonPrimitive?.contentOrNull
+        val destination = resolvePath(path)
+        if (destination == null) {
+            return errorReply(message)
+        }
+        val transferIdRaw = payload?.get("transferId")?.jsonPrimitive?.contentOrNull
+        val tokenRaw = payload?.get("token")?.jsonPrimitive?.contentOrNull
+        val host = payload?.get("host")?.jsonPrimitive?.contentOrNull
+        val port = payload?.get("port")?.jsonPrimitive?.int
+        val size = payload?.get("size")?.jsonPrimitive?.content?.toLongOrNull()
+        if (transferIdRaw == null || tokenRaw == null || host == null || port == null || size == null) {
+            return errorReply(message)
+        }
+        val transferId = try {
+            UUID.fromString(transferIdRaw)
+        } catch (e: IllegalArgumentException) {
+            return errorReply(message)
+        }
+        val token = try {
+            UUID.fromString(tokenRaw)
+        } catch (e: IllegalArgumentException) {
+            return errorReply(message)
+        }
+
+        // A pushed file may target a subfolder that doesn't exist on this device yet - "send a
+        // photo from an empty folder" must not fail merely because the folder isn't there.
+        destination.parentFile?.mkdirs()
+
+        // Unresolved: SlipstreamSession must not itself perform a DNS lookup (or trust a
+        // non-literal host at all) merely to build the address it hands to the callback -
+        // that validation belongs at the point the caller actually connects
+        // (SlipstreamPeer.bulkEndpointFrom mirrors the same check pull.ok's host/port go
+        // through today).
+        onPushOffered(transferId, token, InetSocketAddress.createUnresolved(host, port), size, destination)
+        return ControlMessage(type = SessionMessageTypes.PUSH_OK, id = message.id, payload = JsonObject(emptyMap()))
+    }
+
     // --- media streaming ---
 
     private fun streamRequest(message: ControlMessage): ControlMessage {
@@ -205,6 +312,26 @@ class SlipstreamSession(
             return null
         }
         clipboardSink.setText(text)
+        return null
+    }
+
+    // --- play (push-to-play) ---
+
+    /** `play` is an event (design.md §8), same discipline as [clipboard]: it never gets a
+     * reply, and an unresolvable path is silently dropped rather than answered with an error -
+     * this is a fire-and-forget UX message, not a request. */
+    private fun play(message: ControlMessage): ControlMessage? {
+        val payload = message.payload ?: return null
+        val url = payload["url"]?.jsonPrimitive?.contentOrNull
+        if (url != null) {
+            val mime = payload["mime"]?.jsonPrimitive?.contentOrNull
+            onPlayUrlRequested(url, mime)
+            return null
+        }
+        val path = payload["path"]?.jsonPrimitive?.contentOrNull ?: return null
+        val file = resolvePath(path) ?: return null
+        if (!file.exists()) return null
+        onPlayRequested(file)
         return null
     }
 

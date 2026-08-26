@@ -1,6 +1,9 @@
 package com.slipstream.core
 
 import com.slipstream.core.control.ClipboardSink
+import com.slipstream.core.control.ControlClient
+import com.slipstream.core.control.ControlMessage
+import com.slipstream.core.control.SessionMessageTypes
 import com.slipstream.core.discovery.DiscoveryCoordinator
 import com.slipstream.core.discovery.DiscoveryResponder
 import com.slipstream.core.identity.DeviceIdentity
@@ -8,6 +11,7 @@ import com.slipstream.core.identity.PairedPeerStore
 import com.slipstream.core.identity.PairingCode
 import com.slipstream.core.net.LocalNetwork
 import com.slipstream.core.net.NetworkInfo
+import java.io.File
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.util.concurrent.CountDownLatch
@@ -19,6 +23,8 @@ import kotlin.io.path.createTempDirectory
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -69,6 +75,262 @@ class SlipstreamPeerPairingTest {
             bulkPort = 0,
             mediaPort = 0,
         )
+    }
+
+    /** Same construction as [peer], but also returns the root directory so a test can inspect
+     * what actually landed on disk (e.g. after a push). */
+    private fun peerWithRoot(name: String): Pair<SlipstreamPeer, File> {
+        val (p, dir, _) = peerWithRootAndStore(name)
+        return p to dir
+    }
+
+    /** Same construction as [peerWithRoot], but also returns the [PairedPeerStore] backing it -
+     * needed by tests that want to connect to this peer as a raw [ControlClient], since pinning
+     * a control connection to a peer requires the caller's own paired-peer store. Also accepts
+     * [onPlayRequested] so the `play` end-to-end test can observe it fire. */
+    private fun peerWithRootAndStore(
+        name: String,
+        onPlayRequested: (File) -> Unit = {},
+        onPlayUrlRequested: (String, String?) -> Unit = { _, _ -> },
+    ): Triple<SlipstreamPeer, File, PairedPeerStore> {
+        val dir = createTempDirectory().toFile()
+        val networkInfo = LoopbackNetworkInfo()
+        val store = PairedPeerStore(dir)
+        val p = SlipstreamPeer(
+            identity = DeviceIdentity.createNew(name),
+            peerStore = store,
+            networkInfo = networkInfo,
+            rootDirectory = dir,
+            clipboardSink = ClipboardSink { },
+            discoveryCoordinatorFactory = { DiscoveryCoordinator(networkInfo, cache = null, strategies = emptyList()) },
+            controlPort = 0,
+            bulkPort = 0,
+            mediaPort = 0,
+            onPlayRequested = onPlayRequested,
+            onPlayUrlRequested = onPlayUrlRequested,
+        )
+        return Triple(p, dir, store)
+    }
+
+    /** Pairs [a] and [b] over loopback through the same public pairing API the pairing tests
+     * above exercise, so push/pull tests can start from an already-paired pair without
+     * duplicating that dance inline. */
+    private fun pair(a: SlipstreamPeer, b: SlipstreamPeer) {
+        a.start()
+        b.start()
+        val bDone = CountDownLatch(1)
+        thread(isDaemon = true) {
+            b.awaitPairing(timeout = 20.seconds) { true }
+            bDone.countDown()
+        }
+        val endpoint = requireNotNull(b.controlEndpoint)
+        repeat(50) {
+            if (b.isPairingWindowOpen) return@repeat
+            Thread.sleep(20)
+        }
+        val result = a.initiatePairing(InetSocketAddress(LOOPBACK, endpoint.port)) { true }
+        assertTrue(bDone.await(20, TimeUnit.SECONDS))
+        assertNotNull("pairing must succeed for the push/pull rig to be usable", result)
+    }
+
+    @Test
+    fun `pushFile delivers the file to the peer's root directory`() {
+        val (sender, senderRoot) = peerWithRoot("Sender")
+        val (receiver, receiverRoot) = peerWithRoot("Receiver")
+        try {
+            pair(sender, receiver)
+
+            val delivered = File(senderRoot, "photo.jpg")
+            val bytes = ByteArray(5 * 1024 * 1024) { (it % 251).toByte() }
+            delivered.writeBytes(bytes)
+            val progress = mutableListOf<Long>()
+
+            val ok = sender.pushFile(
+                requireNotNull(receiver.controlEndpoint),
+                delivered,
+                "incoming/photo.jpg",
+            ) { progress.add(it) }
+
+            assertTrue("pushFile must report success", ok)
+            val landed = File(receiverRoot, "incoming/photo.jpg")
+            assertTrue("the pushed file must exist under the receiver's root", landed.exists())
+            assertEquals(delivered.readBytes().toList(), landed.readBytes().toList())
+            assertTrue("progress must add up to at least the full file size", progress.sum() >= delivered.length())
+        } finally {
+            sender.close()
+            receiver.close()
+        }
+    }
+
+    @Test
+    fun `pullFile reports cumulative progress for a real loopback pull`() {
+        val (sender, senderRoot) = peerWithRoot("Sender")
+        val (receiver, receiverRoot) = peerWithRoot("Receiver")
+        try {
+            pair(sender, receiver)
+
+            val source = File(senderRoot, "movie.bin")
+            val bytes = ByteArray(3 * 1024 * 1024) { (it % 253).toByte() }
+            source.writeBytes(bytes)
+
+            val progress = mutableListOf<Long>()
+            val destination = File(receiverRoot, "pulled/movie.bin")
+            val part = receiver.pullFile(
+                requireNotNull(sender.controlEndpoint),
+                "movie.bin",
+                destination,
+                streams = 2,
+            ) { progress.add(it) }
+            part.close()
+
+            assertTrue("pulled file must exist", destination.exists())
+            assertEquals(source.readBytes().toList(), destination.readBytes().toList())
+            assertTrue(
+                "onProgress must deliver a non-empty cumulative byte count for the pull",
+                progress.isNotEmpty() && progress.sum() >= source.length(),
+            )
+        } finally {
+            sender.close()
+            receiver.close()
+        }
+    }
+
+    @Test
+    fun `a push offer that escapes the root is refused`() {
+        val (sender, senderRoot) = peerWithRoot("Sender")
+        val (receiver, receiverRoot) = peerWithRoot("Receiver")
+        try {
+            pair(sender, receiver)
+
+            val delivered = File(senderRoot, "secret.txt")
+            delivered.writeBytes(ByteArray(16))
+
+            val ok = sender.pushFile(
+                requireNotNull(receiver.controlEndpoint),
+                delivered,
+                "../../etc/passwd",
+            )
+
+            assertFalse("an escaping push offer must be refused", ok)
+            val escaped = File(receiverRoot.parentFile, "etc/passwd")
+            assertFalse("nothing must be written outside the receiver's root", escaped.exists())
+        } finally {
+            sender.close()
+            receiver.close()
+        }
+    }
+
+    @Test
+    fun `pushFile releases its token when the peer never accepts`() {
+        val (sender, senderRoot) = peerWithRoot("Sender")
+        val (receiver, _) = peerWithRoot("Receiver")
+        try {
+            pair(sender, receiver)
+            // Kill the receiver's control server so the sender's push.offer connection is
+            // refused/closed before a push.ok can ever arrive - the "peer never accepts" case.
+            receiver.close()
+
+            val delivered = File(senderRoot, "photo.jpg")
+            delivered.writeBytes(ByteArray(1024))
+            val before = sender.servedTransferCount
+
+            val ok = sender.pushFile(InetSocketAddress(LOOPBACK, 1), delivered, "photo.jpg")
+
+            assertFalse("pushFile must fail when no push.ok ever arrives", ok)
+            assertEquals(
+                "the token issued for the abandoned push must be released",
+                before,
+                sender.servedTransferCount,
+            )
+        } finally {
+            sender.close()
+        }
+    }
+
+    @Test
+    fun `sending play over a real connection invokes the receiver's callback`() {
+        val (sender, _, senderStore) = peerWithRootAndStore("Sender")
+        val requested = mutableListOf<File>()
+        val (receiver, receiverRoot, _) = peerWithRootAndStore("Receiver", onPlayRequested = { requested.add(it) })
+        try {
+            pair(sender, receiver)
+
+            val file = File(receiverRoot, "song.mp3")
+            file.writeBytes(ByteArray(10))
+
+            ControlClient.connect(requireNotNull(receiver.controlEndpoint), sender.identity, senderStore).use { conn ->
+                conn.send(
+                    ControlMessage(
+                        type = "play",
+                        payload = JsonObject(mapOf("path" to JsonPrimitive("song.mp3"))),
+                    ),
+                )
+            }
+
+            repeat(50) {
+                if (requested.isNotEmpty()) return@repeat
+                Thread.sleep(20)
+            }
+            assertEquals(1, requested.size)
+            assertEquals(file.canonicalFile, requested.single().canonicalFile)
+        } finally {
+            sender.close()
+            receiver.close()
+        }
+    }
+
+    @Test
+    fun `sending play with a url over a real connection invokes onPlayUrlRequested, not onPlayRequested`() {
+        val (sender, _, senderStore) = peerWithRootAndStore("Sender")
+        val fileRequests = mutableListOf<File>()
+        val urlRequests = mutableListOf<Pair<String, String?>>()
+        val (receiver, _, _) = peerWithRootAndStore(
+            "Receiver",
+            onPlayRequested = { fileRequests.add(it) },
+            onPlayUrlRequested = { url, mime -> urlRequests.add(url to mime) },
+        )
+        try {
+            pair(sender, receiver)
+
+            ControlClient.connect(requireNotNull(receiver.controlEndpoint), sender.identity, senderStore).use { conn ->
+                conn.send(
+                    ControlMessage(
+                        type = "play",
+                        payload = JsonObject(
+                            mapOf(
+                                "url" to JsonPrimitive("http://192.168.1.5:53323/media/token-1"),
+                                "mime" to JsonPrimitive("video/mp4"),
+                            ),
+                        ),
+                    ),
+                )
+            }
+
+            repeat(50) {
+                if (urlRequests.isNotEmpty()) return@repeat
+                Thread.sleep(20)
+            }
+            assertEquals(listOf("http://192.168.1.5:53323/media/token-1" to "video/mp4"), urlRequests)
+            assertTrue("a url-carrying play must never invoke the path-based callback", fileRequests.isEmpty())
+        } finally {
+            sender.close()
+            receiver.close()
+        }
+    }
+
+    @Test
+    fun `mediaEndpoint reflects the peer's own bound media server once started, and is null before start`() {
+        val (peer, _) = peerWithRoot("Solo")
+        assertNull("mediaEndpoint must be null before start()", peer.mediaEndpoint)
+        try {
+            peer.start()
+            val endpoint = peer.mediaEndpoint
+            assertNotNull("mediaEndpoint must be populated once the media server is up", endpoint)
+            assertEquals(LOOPBACK, endpoint!!.address)
+            assertTrue("mediaEndpoint's port must be the real bound port, not the requested 0", endpoint.port > 0)
+        } finally {
+            peer.close()
+        }
     }
 
     @Test

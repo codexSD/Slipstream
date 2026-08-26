@@ -46,9 +46,19 @@ Two narrower follow-ups from this fix's own review, not closed in this branch:
 
 ### Cross-implementation pairing and discovery not fully verified — OPEN
 
-Task 13's Step 1 ("open the pairing window on the phone") could not be performed as written: this
-plan's scope explicitly excludes UI (Plan 4 consumes this module), so the shipped app has no
-pairing UI. Both sides were paired out-of-band instead — the same mechanism Plan 1's manual `pair`
+**Update from Plan 4 (2026-08-26):** the pairing-UI gap this section describes is now closed —
+Plan 4's Task 5 built a real `PairingScreen`/`PairingViewModel`, and Task 13's whole-branch review
+found and fixed the gap where it existed but was never wired into the navigation shell. A phone
+running Plan 4's app can now open a pairing window through the UI. However, Plan 4's own Task 14
+could not exercise this on real hardware (no physical device pair was reachable from that
+session's execution environment), so the pairing-UI fix is verified by code review and unit tests
+only, not by an actual on-device pairing exchange. The TLS-interop gap described below is
+unrelated to the UI and remains fully open — see
+`2026-08-26-android-app-deviations.md`'s Task 14 section for the current state.
+
+At the time this plan (Plan 3) shipped, Task 13's Step 1 ("open the pairing window on the phone")
+could not be performed as written: this plan's scope explicitly excluded UI (Plan 4 consumes this
+module), so the shipped app had no pairing UI. Both sides were paired out-of-band instead — the same mechanism Plan 1's manual `pair`
 harness command uses: each device's real identity (device id + TLS certificate fingerprint) was
 extracted (the phone's via a throwaway mutual-TLS `openssl s_client` probe against its own running
 `ControlServer`, since the protocol accepts any client certificate at the raw TLS layer per

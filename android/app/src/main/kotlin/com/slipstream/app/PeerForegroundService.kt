@@ -12,6 +12,12 @@ import android.net.NetworkRequest
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
+import com.slipstream.app.peer.PeerController
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 
 /**
  * Foreground service that keeps [SlipstreamApplication.peer] running while the app is
@@ -28,6 +34,11 @@ class PeerForegroundService : Service() {
     private lateinit var connectivityManager: ConnectivityManager
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
+    /** Service-lifetime scope for driving [SlipstreamApplication.peerController]'s own state
+     * machine alongside the lower-level [SlipstreamApplication.peer] this service already
+     * starts directly - see [onCreate]. */
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
@@ -41,6 +52,8 @@ class PeerForegroundService : Service() {
         // instead of tearing down and rebuilding everything start() just brought up.
         val active = runCatching { connectivityManager.activeNetwork }.getOrNull()
         app.peer.start(active)
+
+        startPeerControllerLifecycle(app.peerController, scope)
 
         val callback = buildNetworkCallback(connectivityManager) { app.peer.onNetworkChanged(it) }
         connectivityManager.registerNetworkCallback(networkRequest(), callback)
@@ -109,6 +122,7 @@ class PeerForegroundService : Service() {
     }
 
     override fun onDestroy() {
+        scope.cancel()
         networkCallback?.let { connectivityManager.unregisterNetworkCallback(it) }
         (application as SlipstreamApplication).peer.close()
         super.onDestroy()
@@ -141,4 +155,21 @@ class PeerForegroundService : Service() {
         private const val CHANNEL_ID = "slipstream-peer"
         private const val NOTIFICATION_ID = 1
     }
+}
+
+/**
+ * Starts [controller]'s own state machine (Idle -> Searching -> Connected/Degraded/Lost) on
+ * [scope], alongside the lower-level [com.slipstream.core.SlipstreamPeer] [PeerForegroundService]
+ * already starts directly. Extracted to a top-level function (rather than inlined in
+ * [PeerForegroundService.onCreate]) so a test can drive it against a real [PeerController]
+ * without needing a live Android [android.app.Service].
+ *
+ * Deliberately [PeerController.reconnect], not [PeerController.start]: `RealPeerController.start`
+ * would call the underlying peer's own `start()` a second time (`peer.start(active)` already ran
+ * in [PeerForegroundService.onCreate]), and that isn't idempotent - a second call rebinds the
+ * same fixed control/bulk/media ports and throws. `reconnect()` runs the same discover-and-connect
+ * work (Idle -> Searching -> Connected/Lost) without touching the peer's own `start()` at all.
+ */
+internal fun startPeerControllerLifecycle(controller: PeerController, scope: CoroutineScope) {
+    scope.launch { controller.reconnect() }
 }

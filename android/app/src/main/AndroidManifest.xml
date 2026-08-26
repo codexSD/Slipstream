@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <!-- LAN discovery, control, bulk and media traffic. -->
     <uses-permission android:name="android.permission.INTERNET" />
@@ -23,6 +24,14 @@
          user declines, just with slower reconnection while the peer service is deprioritized. -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
+    <!-- Full filesystem browsing (design.md §2): a normal storage-permission dialog only grants
+         scoped/media access, not the arbitrary-path browsing Slipstream's file browser needs to
+         offer a paired computer. Requested via a Settings intent, not requestPermissions - see
+         PermissionGate. The app still works with it denied, just limited to what scoped storage
+         already exposes. -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
+        tools:ignore="ScopedStorage" />
+
     <application
         android:name=".SlipstreamApplication"
         android:allowBackup="false"
@@ -37,12 +46,38 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+
+            <!-- Task 10: lets Slipstream appear in Android's share sheet as a send target for
+                 "phone picks a video" (and any other file/folder) transfers. -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
         </activity>
 
         <service
             android:name=".PeerForegroundService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
+
+        <!-- Task 11: hands a content:// URI (never a bare file://, which Android refuses to
+             expose to another app since API 24) to the system default player for an inbound
+             `play` (push-to-play, design.md §8) that names a file this device already owns. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
 
         <receiver
             android:name=".BootReceiver"

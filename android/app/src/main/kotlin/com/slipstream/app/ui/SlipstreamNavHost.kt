@@ -1,0 +1,257 @@
+package com.slipstream.app.ui
+
+import android.net.Uri
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.SwapVert
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.navigation.NavGraph.Companion.findStartDestination
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
+import androidx.navigation.compose.rememberNavController
+import com.slipstream.app.peer.PeerConnectionState
+import com.slipstream.app.peer.PeerController
+import com.slipstream.app.peer.PeerStatus
+import com.slipstream.app.peer.SettingsStore
+import com.slipstream.app.SlipstreamApplication
+import com.slipstream.app.ui.browse.BrowseScreen
+import com.slipstream.app.ui.history.HistoryScreen
+import com.slipstream.app.ui.history.HistoryViewModel
+import com.slipstream.app.ui.home.HomeScreen
+import com.slipstream.app.ui.pairing.PairingScreen
+import com.slipstream.app.ui.pairing.PairingViewModel
+import com.slipstream.app.ui.send.SendSheet
+import com.slipstream.app.ui.settings.SettingsScreen
+import com.slipstream.app.ui.transfers.TransfersScreen
+import com.slipstream.meridian.MeridianTheme
+import com.slipstream.meridian.component.MeridianStatus
+import com.slipstream.meridian.component.MeridianStatusPill
+import kotlinx.coroutines.flow.StateFlow
+
+/**
+ * The app's five top-level screens (Plan 5's shell). Order here is both the bottom navigation's
+ * visual order and, via [entries], the order asserted by tests — Home first, as the launch
+ * destination.
+ *
+ * Screens themselves are placeholders; Tasks 4-9 build the real content behind each route.
+ */
+enum class SlipstreamDestination(val route: String, val label: String, val icon: ImageVector) {
+    Home("home", "Home", Icons.Filled.Home),
+    Browse("browse", "Browse", Icons.Filled.Folder),
+    Transfers("transfers", "Transfers", Icons.Filled.SwapVert),
+    History("history", "History", Icons.Filled.History),
+    Settings("settings", "Settings", Icons.Filled.Settings),
+}
+
+/**
+ * Maps the peer's connection state to the signal colour the top-bar pill renders, per Plan 5's
+ * shell: Connected is good news, Searching/transferring is merely in flight (not an alarm),
+ * Degraded still works but is worth flagging, and Lost is the one truly bad state. [Idle] isn't
+ * called out in the plan; Neutral is the obvious fit for "nothing to report yet".
+ */
+internal fun PeerConnectionState.toMeridianStatus(): MeridianStatus = when (this) {
+    PeerConnectionState.Connected -> MeridianStatus.Positive
+    PeerConnectionState.Searching -> MeridianStatus.Info
+    PeerConnectionState.Degraded -> MeridianStatus.Warning
+    PeerConnectionState.Lost -> MeridianStatus.Critical
+    PeerConnectionState.Idle -> MeridianStatus.Neutral
+}
+
+/** The pill's required text label (spec §12: colour is never the only cue). Wording for
+ * [PeerConnectionState.Searching] and [PeerConnectionState.Degraded] follows spec §15's worked
+ * examples exactly ("Phone not on this network. Searching…" and "2.4 GHz — slower link" — band
+ * first, so the observed speed is explained rather than mysterious). Connected/Lost/Idle have no
+ * worked example in §15, so their wording here is this task's own choice. */
+internal fun pillLabel(status: PeerStatus): String = when (status.state) {
+    PeerConnectionState.Connected -> status.peerName ?: "Connected"
+    PeerConnectionState.Searching -> "Phone not on this network. Searching…"
+    PeerConnectionState.Degraded -> status.band?.let { "$it — slower link" } ?: "Degraded"
+    PeerConnectionState.Lost -> "Disconnected"
+    PeerConnectionState.Idle -> "Not connected"
+}
+
+/**
+ * The app's navigation shell: bottom navigation (a phone, not the desktop's sidebar) plus a top
+ * bar carrying the current screen's title and the connection pill inline-end. Wraps the whole
+ * [NavHost] in exactly one [MeridianTheme] call, per the design system's constraint that
+ * `isSystemInDarkTheme()` has a single call site (inside [MeridianTheme] itself).
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun SlipstreamNavHost(
+    peerController: PeerController,
+    settingsStore: SettingsStore,
+    sharedUris: List<Uri> = emptyList(),
+) {
+    val peerStatus = peerController.status
+    val context = LocalContext.current
+    val application = context.applicationContext as SlipstreamApplication
+    val transferQueue = application.transferQueue
+    val historyStore = application.historyStore
+
+    // I1: collected reactively (rather than read once via settingsStore.getTheme()) so flipping
+    // the setting on the Settings screen recomposes MeridianTheme immediately.
+    val theme by settingsStore.themeFlow.collectAsStateWithLifecycle()
+
+    // Determine darkTheme based on user preference.
+    // This is the only call site of isSystemInDarkTheme (constraint from spec §13).
+    val darkTheme = when (theme) {
+        SettingsStore.Theme.Light -> false
+        SettingsStore.Theme.Dark -> true
+        SettingsStore.Theme.System -> isSystemInDarkTheme()
+    }
+
+    MeridianTheme(darkTheme = darkTheme) {
+        val navController = rememberNavController()
+        val backStackEntry by navController.currentBackStackEntryAsState()
+        val currentDestination = SlipstreamDestination.entries.firstOrNull {
+            it.route == backStackEntry?.destination?.route
+        } ?: SlipstreamDestination.Home
+        val status by peerStatus.collectAsState()
+
+        LaunchedEffect(sharedUris) {
+            // Task 10: a share-sheet launch (ACTION_SEND/ACTION_SEND_MULTIPLE) routes straight
+            // to the send screen with its item(s) pre-queued, rather than landing on Home with
+            // no indication anything was shared.
+            if (sharedUris.isNotEmpty()) navController.navigate("send")
+        }
+
+        Scaffold(
+            topBar = {
+                TopAppBar(
+                    title = { Text(currentDestination.label) },
+                    actions = {
+                        MeridianStatusPill(
+                            status = status.state.toMeridianStatus(),
+                            label = pillLabel(status),
+                            modifier = Modifier.padding(end = 16.dp),
+                        )
+                    },
+                )
+            },
+            bottomBar = {
+                NavigationBar {
+                    SlipstreamDestination.entries.forEach { destination ->
+                        NavigationBarItem(
+                            modifier = Modifier.testTag("navitem-${destination.route}"),
+                            selected = currentDestination == destination,
+                            onClick = {
+                                navController.navigate(destination.route) {
+                                    popUpTo(navController.graph.findStartDestination().id) {
+                                        saveState = true
+                                    }
+                                    launchSingleTop = true
+                                    restoreState = true
+                                }
+                            },
+                            icon = { Icon(destination.icon, contentDescription = destination.label) },
+                            label = { Text(destination.label) },
+                        )
+                    }
+                }
+            },
+        ) { contentPadding ->
+            NavHost(
+                navController = navController,
+                startDestination = SlipstreamDestination.Home.route,
+                modifier = Modifier.padding(contentPadding),
+            ) {
+                composable(SlipstreamDestination.Home.route) {
+                    HomeScreen(
+                        peerController = peerController,
+                        navController = navController,
+                        modifier = Modifier.testTag("screen-content"),
+                    )
+                }
+                composable(SlipstreamDestination.Browse.route) {
+                    BrowseScreen(
+                        peerController = peerController,
+                        settingsStore = settingsStore,
+                        transferQueue = transferQueue,
+                        historyStore = historyStore,
+                        modifier = Modifier.testTag("screen-content"),
+                    )
+                }
+                composable(SlipstreamDestination.Transfers.route) {
+                    TransfersScreen(
+                        peerController = peerController,
+                        transfersState = transferQueue.activeTransfersState,
+                        onCancel = { id -> transferQueue.cancel(id) },
+                        modifier = Modifier.testTag("screen-content"),
+                    )
+                }
+                // C3: History is now a real screen, backed by the application-scoped HistoryStore
+                // singleton (so it observes entries written by Send/Browse via the shared
+                // TransferQueue), and re-enqueues through the same shared TransferQueue rather
+                // than a no-op.
+                composable(SlipstreamDestination.History.route) {
+                    val historyViewModel = remember(historyStore, transferQueue, peerController) {
+                        HistoryViewModel(historyStore, transferQueue, peerController)
+                    }
+                    HistoryScreen(
+                        viewModel = historyViewModel,
+                        modifier = Modifier.testTag("screen-content"),
+                    )
+                }
+                composable(SlipstreamDestination.Settings.route) {
+                    SettingsScreen(
+                        peerController = peerController,
+                        settingsStore = settingsStore,
+                        onPairDevice = { navController.navigate("pairing") },
+                        modifier = Modifier.testTag("screen-content"),
+                    )
+                }
+                // Task 10: reachable from Home's "Send files" tile and, automatically, from an
+                // incoming share-sheet intent - not one of the five bottom-nav destinations.
+                composable("send") {
+                    SendSheet(
+                        peerController = peerController,
+                        transferQueue = transferQueue,
+                        historyStore = historyStore,
+                        sharedUris = sharedUris,
+                        modifier = Modifier.testTag("screen-content"),
+                    )
+                }
+                // C1: pairing is now reachable — from Home's "Start Pairing" prompt (unpaired
+                // devices) and from Settings' "Pair a device" button, both routed here for one
+                // consistent flow (see this task's report for why Settings' previous inline,
+                // never-confirming flow was replaced rather than kept as a "lighter" alternative).
+                composable("pairing") {
+                    val pairingViewModel = remember(peerController) { PairingViewModel(peerController) }
+                    PairingScreen(viewModel = pairingViewModel)
+                }
+                // I2: Home's "Send clipboard" tile - a minimal text-field-and-send-button flow
+                // over PeerController.sendClipboard, modelled on Settings' plain Button pattern.
+                composable("clipboard") {
+                    com.slipstream.app.ui.clipboard.ClipboardScreen(
+                        peerController = peerController,
+                        modifier = Modifier.testTag("screen-content"),
+                    )
+                }
+            }
+        }
+    }
+}

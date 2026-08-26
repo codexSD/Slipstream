@@ -51,6 +51,14 @@ class BulkServer(
     /** The layer-2 predicate. Overridable only so a test can drive the rejection path - a
      * loopback client is always local, so there is no other way to observe it. */
     private val isLocalAddress: (InetAddress) -> Boolean = LanGuard::isLocal,
+    /** Invoked with the number of bytes just written for a given transfer, right after that
+     * write succeeds (never before - a partial or failed write must not report bytes as
+     * served). This is the only way the *sending* side of a push can observe its own progress:
+     * the sender never runs [BulkClient.download] for a push (the receiver does, symmetric to
+     * how a pull already works from the puller's side), so its sole visibility into "how much
+     * has gone out" is this server's own serving loop. Default no-op preserves every existing
+     * caller/test unchanged. */
+    private val onBytesServed: (transferId: UUID, bytes: Long) -> Unit = { _, _ -> },
 ) : AutoCloseable {
 
     private val serverSocket = ServerSocket(port, ACCEPT_BACKLOG, bindAddress)
@@ -105,6 +113,7 @@ class BulkServer(
                     output.writeInt(len)
                     output.write(buf)
                     output.writeInt(crc.toInt())
+                    onBytesServed(header.transferId, len.toLong())
 
                     position += len
                     remaining -= len

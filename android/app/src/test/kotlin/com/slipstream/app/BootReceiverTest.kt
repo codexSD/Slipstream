@@ -6,6 +6,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import androidx.test.core.app.ApplicationProvider
+import com.slipstream.app.permissions.PermissionGate
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -83,7 +84,7 @@ class BootReceiverTest {
 
         assertTrue(
             "the foreground notification is suppressed on API 33+ without this",
-            declared.contains(MainActivity.POST_NOTIFICATIONS),
+            declared.contains(PermissionGate.POST_NOTIFICATIONS),
         )
         assertTrue(declared.contains("android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE"))
     }

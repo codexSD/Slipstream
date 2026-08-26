@@ -4,6 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MODULE="$SCRIPT_DIR/../meridian-compose/src"
+APP_SRC="$SCRIPT_DIR/../app/src"
 TOKENS="$MODULE/main/kotlin/com/slipstream/meridian/MeridianTokens.kt"
 status=0
 
@@ -57,6 +58,10 @@ for role in canvas surface stroke tint ink inkMuted brand brandStrong onBrand on
     status=1
   fi
 done
+
+echo "==> :app colour literals"
+appColours=$(grep -rn --include="*.kt" -E "Color\(0x[0-9A-Fa-f]{6,8}\)" "$APP_SRC" || true)
+[ -n "$appColours" ] && { echo "FAIL: :app must take colours from MeridianTheme:"; echo "$appColours"; status=1; }
 
 [ "$status" -eq 0 ] && echo "All Meridian checks passed."
 exit "$status"

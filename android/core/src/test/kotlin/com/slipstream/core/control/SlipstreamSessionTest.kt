@@ -30,6 +30,8 @@ class SlipstreamSessionTest {
         root: File = createTempDirectory().toFile(),
         clipboard: ClipboardSink = RecordingClipboardSink(),
         identity: DeviceIdentity = DeviceIdentity.createNew("Pixel"),
+        onPlayRequested: (File) -> Unit = {},
+        onPlayUrlRequested: (String, String?) -> Unit = { _, _ -> },
     ) = SlipstreamSession(
         identity = identity,
         rootDirectory = root,
@@ -38,6 +40,8 @@ class SlipstreamSessionTest {
         mediaTokenVault = MediaTokenVault(),
         mediaPort = { 53323 },
         clipboardSink = clipboard,
+        onPlayRequested = onPlayRequested,
+        onPlayUrlRequested = onPlayUrlRequested,
     )
 
     // --- hello / hello.ok: the near-miss the brief calls out by name ---
@@ -227,5 +231,102 @@ class SlipstreamSessionTest {
         )
 
         assertEquals(1, sink.calls)
+    }
+
+    // --- play ---
+
+    @Test
+    fun `a play message invokes onPlayRequested with the resolved file`() {
+        val root = createTempDirectory().toFile()
+        val file = File(root, "song.mp3")
+        file.writeBytes(ByteArray(10))
+        val requested = mutableListOf<File>()
+        val session = newSession(root = root, onPlayRequested = { requested.add(it) })
+
+        val reply = session.dispatch(
+            ControlMessage(type = SessionMessageTypes.PLAY, payload = JsonObject(mapOf("path" to JsonPrimitive("song.mp3")))),
+        )
+
+        assertNull(reply)
+        assertEquals(1, requested.size)
+        assertEquals(file.canonicalFile, requested.single().canonicalFile)
+    }
+
+    @Test
+    fun `a play message with an escaping path is silently ignored`() {
+        val root = createTempDirectory().toFile()
+        val requested = mutableListOf<File>()
+        val session = newSession(root = root, onPlayRequested = { requested.add(it) })
+
+        val reply = session.dispatch(
+            ControlMessage(
+                type = SessionMessageTypes.PLAY,
+                payload = JsonObject(mapOf("path" to JsonPrimitive("../../etc/passwd"))),
+            ),
+        )
+
+        assertNull(reply)
+        assertTrue("an escaping play path must never invoke onPlayRequested", requested.isEmpty())
+    }
+
+    // --- play with a `url` payload (Task 11's addendum fix: real push-to-play, where the file
+    // being played is owned by the *sender*, not resolvable against this device's own root) ---
+
+    @Test
+    fun `a play message carrying a url invokes onPlayUrlRequested, not onPlayRequested`() {
+        val fileRequests = mutableListOf<File>()
+        val urlRequests = mutableListOf<Pair<String, String?>>()
+        val session = newSession(
+            onPlayRequested = { fileRequests.add(it) },
+            onPlayUrlRequested = { url, mime -> urlRequests.add(url to mime) },
+        )
+
+        val reply = session.dispatch(
+            ControlMessage(
+                type = SessionMessageTypes.PLAY,
+                payload = JsonObject(
+                    mapOf(
+                        "url" to JsonPrimitive("http://192.168.1.5:53323/media/abc-123"),
+                        "mime" to JsonPrimitive("video/mp4"),
+                    ),
+                ),
+            ),
+        )
+
+        assertNull(reply)
+        assertEquals(listOf("http://192.168.1.5:53323/media/abc-123" to "video/mp4"), urlRequests)
+        assertTrue("a url-carrying play must never resolve a local path", fileRequests.isEmpty())
+    }
+
+    @Test
+    fun `a play message with a url but no mime still invokes onPlayUrlRequested with a null mime`() {
+        val urlRequests = mutableListOf<Pair<String, String?>>()
+        val session = newSession(onPlayUrlRequested = { url, mime -> urlRequests.add(url to mime) })
+
+        val reply = session.dispatch(
+            ControlMessage(
+                type = SessionMessageTypes.PLAY,
+                payload = JsonObject(mapOf("url" to JsonPrimitive("http://192.168.1.5:53323/media/xyz"))),
+            ),
+        )
+
+        assertNull(reply)
+        assertEquals(listOf("http://192.168.1.5:53323/media/xyz" to null), urlRequests)
+    }
+
+    @Test
+    fun `a play message with neither url nor path is silently ignored`() {
+        val fileRequests = mutableListOf<File>()
+        val urlRequests = mutableListOf<Pair<String, String?>>()
+        val session = newSession(
+            onPlayRequested = { fileRequests.add(it) },
+            onPlayUrlRequested = { url, mime -> urlRequests.add(url to mime) },
+        )
+
+        val reply = session.dispatch(ControlMessage(type = SessionMessageTypes.PLAY, payload = JsonObject(emptyMap())))
+
+        assertNull(reply)
+        assertTrue(fileRequests.isEmpty())
+        assertTrue(urlRequests.isEmpty())
     }
 }

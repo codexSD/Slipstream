@@ -43,6 +43,15 @@ class PairedPeerStore(private val dir: File) {
         _initialized = true
     }
 
+    @Synchronized
+    fun clear() {
+        if (peerFile.exists()) {
+            peerFile.delete()
+        }
+        _peer = null
+        _initialized = true
+    }
+
     private fun loadPeer(): PairedPeer? {
         if (!peerFile.exists()) {
             return null

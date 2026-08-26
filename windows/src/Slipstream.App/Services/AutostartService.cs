@@ -1,6 +1,14 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 
 namespace Slipstream.App.Services;
+
+/// <summary>
+/// The process boundary <see cref="AutostartService"/> uses to talk to Task Scheduler: takes a
+/// <c>schtasks.exe</c> argument string, returns its exit code and combined output. Exists so the
+/// registration logic can be tested without registering anything on the machine running the
+/// tests - see the remarks on <see cref="AutostartService"/>.
+/// </summary>
+public delegate (int ExitCode, string Output) SchtasksRunner(string arguments);
 
 /// <summary>
 /// Registers/unregisters a per-user Task Scheduler logon task that launches this app's own
@@ -21,11 +29,21 @@ namespace Slipstream.App.Services;
 /// of the same name instead of failing, so calling it twice leaves one well-formed task, not
 /// an error or a duplicate.
 /// </para>
+/// <para>
+/// The <c>schtasks.exe</c> invocation is injectable (<see cref="SchtasksRunner"/>). The claim
+/// above that a per-user <c>/RL LIMITED</c> logon task needs no elevation is not true
+/// everywhere: on a machine whose policy restricts writing logon-triggered tasks to the root
+/// task folder, <c>schtasks /Create /SC ONLOGON</c> returns "Access is denied" for a standard
+/// user. Tests therefore drive this class through a substituted runner, which pins the exact
+/// commands and the idempotency/error contract on every machine, elevated or not, instead of
+/// passing or failing on the test account's privileges.
+/// </para>
 /// </remarks>
 public sealed class AutostartService
 {
     private readonly string _taskName;
     private readonly string _executablePath;
+    private readonly SchtasksRunner _run;
 
     public AutostartService(string taskName)
         : this(taskName, Environment.ProcessPath ?? Process.GetCurrentProcess().MainModule?.FileName
@@ -35,12 +53,20 @@ public sealed class AutostartService
 
     /// <summary>Test/DI seam for the executable path the created task should launch.</summary>
     public AutostartService(string taskName, string executablePath)
+        : this(taskName, executablePath, RunSchtasks)
+    {
+    }
+
+    /// <summary>Test/DI seam for both the executable path and the Task Scheduler boundary.</summary>
+    public AutostartService(string taskName, string executablePath, SchtasksRunner runner)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(taskName);
         ArgumentException.ThrowIfNullOrWhiteSpace(executablePath);
+        ArgumentNullException.ThrowIfNull(runner);
 
         _taskName = taskName;
         _executablePath = executablePath;
+        _run = runner;
     }
 
     /// <summary>Whether a Task Scheduler task named <c>taskName</c> currently exists for the
@@ -54,7 +80,7 @@ public sealed class AutostartService
     public void Enable()
     {
         var args = $"/Create /F /SC ONLOGON /RL LIMITED /TN \"{_taskName}\" /TR \"\\\"{_executablePath}\\\"\"";
-        var (exitCode, output) = Run(args);
+        var (exitCode, output) = _run(args);
         if (exitCode != 0)
             throw new InvalidOperationException($"Could not create the autostart task '{_taskName}' (schtasks exited {exitCode}): {output}");
     }
@@ -65,14 +91,14 @@ public sealed class AutostartService
     {
         if (!IsEnabled) return;
 
-        var (exitCode, output) = Run($"/Delete /F /TN \"{_taskName}\"");
+        var (exitCode, output) = _run($"/Delete /F /TN \"{_taskName}\"");
         if (exitCode != 0)
             throw new InvalidOperationException($"Could not remove the autostart task '{_taskName}' (schtasks exited {exitCode}): {output}");
     }
 
-    private int Query() => Run($"/Query /TN \"{_taskName}\"").ExitCode;
+    private int Query() => _run($"/Query /TN \"{_taskName}\"").ExitCode;
 
-    private static (int ExitCode, string Output) Run(string arguments)
+    private static (int ExitCode, string Output) RunSchtasks(string arguments)
     {
         var psi = new ProcessStartInfo("schtasks.exe", arguments)
         {

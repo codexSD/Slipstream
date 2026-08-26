@@ -5,6 +5,16 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
+    <!--
+      Slipstream.App is a WinUI project with <Platforms>x86;x64;ARM64</Platforms> and no
+      AnyCPU. If this test project stays AnyCPU, a solution-level build hands Slipstream.App
+      a platform it cannot honour, the RuntimeIdentifier stops matching the PlatformTarget
+      (NETSDK1032), and Slipstream.App.Tests never builds - while dotnet test still runs the
+      projects that DID build and exits reporting only 1 test file. Mirroring the platform
+      list keeps the two projects in lockstep so the failure cannot recur silently.
+    -->
+    <Platforms>x86;x64;ARM64</Platforms>
+    <Platform Condition="'$(Platform)' == '' or '$(Platform)' == 'AnyCPU'">x64</Platform>
   </PropertyGroup>
 
   <ItemGroup>

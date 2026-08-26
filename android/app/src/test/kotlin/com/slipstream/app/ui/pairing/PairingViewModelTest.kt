@@ -62,6 +62,10 @@ private class FakeController : PeerController {
     override suspend fun confirmPairing(accept: Boolean) {
         paired = accept
     }
+
+    override suspend fun unpair() {
+        paired = false
+    }
 }
 
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)

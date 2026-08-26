@@ -1,6 +1,9 @@
 package com.slipstream.core
 
 import com.slipstream.core.control.ClipboardSink
+import com.slipstream.core.control.ControlClient
+import com.slipstream.core.control.ControlMessage
+import com.slipstream.core.control.SessionMessageTypes
 import com.slipstream.core.discovery.DiscoveryCoordinator
 import com.slipstream.core.discovery.DiscoveryResponder
 import com.slipstream.core.identity.DeviceIdentity
@@ -20,6 +23,8 @@ import kotlin.io.path.createTempDirectory
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -75,11 +80,24 @@ class SlipstreamPeerPairingTest {
     /** Same construction as [peer], but also returns the root directory so a test can inspect
      * what actually landed on disk (e.g. after a push). */
     private fun peerWithRoot(name: String): Pair<SlipstreamPeer, File> {
+        val (p, dir, _) = peerWithRootAndStore(name)
+        return p to dir
+    }
+
+    /** Same construction as [peerWithRoot], but also returns the [PairedPeerStore] backing it -
+     * needed by tests that want to connect to this peer as a raw [ControlClient], since pinning
+     * a control connection to a peer requires the caller's own paired-peer store. Also accepts
+     * [onPlayRequested] so the `play` end-to-end test can observe it fire. */
+    private fun peerWithRootAndStore(
+        name: String,
+        onPlayRequested: (File) -> Unit = {},
+    ): Triple<SlipstreamPeer, File, PairedPeerStore> {
         val dir = createTempDirectory().toFile()
         val networkInfo = LoopbackNetworkInfo()
+        val store = PairedPeerStore(dir)
         val p = SlipstreamPeer(
             identity = DeviceIdentity.createNew(name),
-            peerStore = PairedPeerStore(dir),
+            peerStore = store,
             networkInfo = networkInfo,
             rootDirectory = dir,
             clipboardSink = ClipboardSink { },
@@ -87,8 +105,9 @@ class SlipstreamPeerPairingTest {
             controlPort = 0,
             bulkPort = 0,
             mediaPort = 0,
+            onPlayRequested = onPlayRequested,
         )
-        return p to dir
+        return Triple(p, dir, store)
     }
 
     /** Pairs [a] and [b] over loopback through the same public pairing API the pairing tests
@@ -223,6 +242,38 @@ class SlipstreamPeerPairingTest {
             )
         } finally {
             sender.close()
+        }
+    }
+
+    @Test
+    fun `sending play over a real connection invokes the receiver's callback`() {
+        val (sender, _, senderStore) = peerWithRootAndStore("Sender")
+        val requested = mutableListOf<File>()
+        val (receiver, receiverRoot, _) = peerWithRootAndStore("Receiver", onPlayRequested = { requested.add(it) })
+        try {
+            pair(sender, receiver)
+
+            val file = File(receiverRoot, "song.mp3")
+            file.writeBytes(ByteArray(10))
+
+            ControlClient.connect(requireNotNull(receiver.controlEndpoint), sender.identity, senderStore).use { conn ->
+                conn.send(
+                    ControlMessage(
+                        type = "play",
+                        payload = JsonObject(mapOf("path" to JsonPrimitive("song.mp3"))),
+                    ),
+                )
+            }
+
+            repeat(50) {
+                if (requested.isNotEmpty()) return@repeat
+                Thread.sleep(20)
+            }
+            assertEquals(1, requested.size)
+            assertEquals(file.canonicalFile, requested.single().canonicalFile)
+        } finally {
+            sender.close()
+            receiver.close()
         }
     }
 

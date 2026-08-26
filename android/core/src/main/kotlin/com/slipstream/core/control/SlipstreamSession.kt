@@ -38,6 +38,7 @@ object SessionMessageTypes {
     const val STREAM_REQUEST = "stream.request"
     const val STREAM_OK = "stream.ok"
     const val CLIPBOARD = "clipboard"
+    const val PLAY = "play"
     const val ERROR = "error"
 }
 
@@ -78,6 +79,10 @@ class SlipstreamSession(
         size: Long,
         destination: File,
     ) -> Unit = { _, _, _, _, _ -> },
+    /** Fired for an inbound `play` (design.md §8, push-to-play): the peer wants this device to
+     * start playing a file it is serving. Pure forwarding callback, same discipline as
+     * [onBulkIssued]/[onPushOffered] - dispatch never itself launches playback UI. */
+    private val onPlayRequested: (file: File) -> Unit = {},
 ) {
     fun dispatch(message: ControlMessage): ControlMessage? = when (message.type) {
         SessionMessageTypes.HELLO -> helloOk(message)
@@ -88,6 +93,7 @@ class SlipstreamSession(
         SessionMessageTypes.PUSH_OFFER -> pushOffer(message)
         SessionMessageTypes.STREAM_REQUEST -> streamRequest(message)
         SessionMessageTypes.CLIPBOARD -> clipboard(message)
+        SessionMessageTypes.PLAY -> play(message)
         // Unknown type: ignored, never disconnects (see class doc).
         else -> null
     }
@@ -266,6 +272,19 @@ class SlipstreamSession(
             return null
         }
         clipboardSink.setText(text)
+        return null
+    }
+
+    // --- play (push-to-play) ---
+
+    /** `play` is an event (design.md §8), same discipline as [clipboard]: it never gets a
+     * reply, and an unresolvable path is silently dropped rather than answered with an error -
+     * this is a fire-and-forget UX message, not a request. */
+    private fun play(message: ControlMessage): ControlMessage? {
+        val path = message.payload?.get("path")?.jsonPrimitive?.contentOrNull ?: return null
+        val file = resolvePath(path) ?: return null
+        if (!file.exists()) return null
+        onPlayRequested(file)
         return null
     }
 

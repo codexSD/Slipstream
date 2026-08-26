@@ -103,6 +103,10 @@ class SlipstreamPeer(
     private val onTeardown: () -> Unit = {},
     private val onRediscover: (DiscoveryResult?) -> Unit = {},
     private val onResumeAttempt: (UUID) -> Unit = {},
+    /** Fired when a paired peer sends `play` (design.md §8, push-to-play): this device is asked
+     * to start playing a file it is serving. [SlipstreamPeer] only forwards - the app-level owner
+     * decides what "play" means (e.g. launching `ACTION_VIEW`). */
+    private val onPlayRequested: (File) -> Unit = {},
 ) : AutoCloseable {
 
     val bulkTokenVault = TokenVault()
@@ -218,6 +222,7 @@ class SlipstreamPeer(
         onPushOffered = { transferId, token, endpoint, size, destination ->
             handlePushOffered(transferId, token, endpoint, size, destination)
         },
+        onPlayRequested = onPlayRequested,
     )
 
     // --- push (device-initiated send) ---

@@ -30,6 +30,7 @@ class SlipstreamSessionTest {
         root: File = createTempDirectory().toFile(),
         clipboard: ClipboardSink = RecordingClipboardSink(),
         identity: DeviceIdentity = DeviceIdentity.createNew("Pixel"),
+        onPlayRequested: (File) -> Unit = {},
     ) = SlipstreamSession(
         identity = identity,
         rootDirectory = root,
@@ -38,6 +39,7 @@ class SlipstreamSessionTest {
         mediaTokenVault = MediaTokenVault(),
         mediaPort = { 53323 },
         clipboardSink = clipboard,
+        onPlayRequested = onPlayRequested,
     )
 
     // --- hello / hello.ok: the near-miss the brief calls out by name ---
@@ -227,5 +229,41 @@ class SlipstreamSessionTest {
         )
 
         assertEquals(1, sink.calls)
+    }
+
+    // --- play ---
+
+    @Test
+    fun `a play message invokes onPlayRequested with the resolved file`() {
+        val root = createTempDirectory().toFile()
+        val file = File(root, "song.mp3")
+        file.writeBytes(ByteArray(10))
+        val requested = mutableListOf<File>()
+        val session = newSession(root = root, onPlayRequested = { requested.add(it) })
+
+        val reply = session.dispatch(
+            ControlMessage(type = SessionMessageTypes.PLAY, payload = JsonObject(mapOf("path" to JsonPrimitive("song.mp3")))),
+        )
+
+        assertNull(reply)
+        assertEquals(1, requested.size)
+        assertEquals(file.canonicalFile, requested.single().canonicalFile)
+    }
+
+    @Test
+    fun `a play message with an escaping path is silently ignored`() {
+        val root = createTempDirectory().toFile()
+        val requested = mutableListOf<File>()
+        val session = newSession(root = root, onPlayRequested = { requested.add(it) })
+
+        val reply = session.dispatch(
+            ControlMessage(
+                type = SessionMessageTypes.PLAY,
+                payload = JsonObject(mapOf("path" to JsonPrimitive("../../etc/passwd"))),
+            ),
+        )
+
+        assertNull(reply)
+        assertTrue("an escaping play path must never invoke onPlayRequested", requested.isEmpty())
     }
 }

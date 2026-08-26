@@ -1,5 +1,6 @@
 package com.slipstream.app.ui
 
+import android.net.Uri
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
@@ -16,6 +17,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
@@ -35,6 +37,7 @@ import com.slipstream.app.peer.SettingsStore
 import com.slipstream.app.SlipstreamApplication
 import com.slipstream.app.ui.browse.BrowseScreen
 import com.slipstream.app.ui.home.HomeScreen
+import com.slipstream.app.ui.send.SendSheet
 import com.slipstream.app.ui.settings.SettingsScreen
 import com.slipstream.app.ui.transfers.TransfersScreen
 import com.slipstream.meridian.MeridianTheme
@@ -92,7 +95,11 @@ internal fun pillLabel(status: PeerStatus): String = when (status.state) {
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SlipstreamNavHost(peerController: PeerController, settingsStore: SettingsStore) {
+fun SlipstreamNavHost(
+    peerController: PeerController,
+    settingsStore: SettingsStore,
+    sharedUris: List<Uri> = emptyList(),
+) {
     val peerStatus = peerController.status
     val context = LocalContext.current
     val transferQueue = (context.applicationContext as SlipstreamApplication).transferQueue
@@ -112,6 +119,13 @@ fun SlipstreamNavHost(peerController: PeerController, settingsStore: SettingsSto
             it.route == backStackEntry?.destination?.route
         } ?: SlipstreamDestination.Home
         val status by peerStatus.collectAsState()
+
+        LaunchedEffect(sharedUris) {
+            // Task 10: a share-sheet launch (ACTION_SEND/ACTION_SEND_MULTIPLE) routes straight
+            // to the send screen with its item(s) pre-queued, rather than landing on Home with
+            // no indication anything was shared.
+            if (sharedUris.isNotEmpty()) navController.navigate("send")
+        }
 
         Scaffold(
             topBar = {
@@ -177,6 +191,15 @@ fun SlipstreamNavHost(peerController: PeerController, settingsStore: SettingsSto
                     SettingsScreen(
                         peerController = peerController,
                         settingsStore = settingsStore,
+                        modifier = Modifier.testTag("screen-content"),
+                    )
+                }
+                // Task 10: reachable from Home's "Send files" tile and, automatically, from an
+                // incoming share-sheet intent - not one of the five bottom-nav destinations.
+                composable("send") {
+                    SendSheet(
+                        peerController = peerController,
+                        sharedUris = sharedUris,
                         modifier = Modifier.testTag("screen-content"),
                     )
                 }

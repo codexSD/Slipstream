@@ -85,7 +85,7 @@ fun HomeScreen(
                 // "Send files" (Task 10), "Stream to PC" (Task 11), "Send clipboard" (Task 12)
                 // navigate to routes that don't exist yet — guard them with null to prevent crashes.
                 val actions = listOf(
-                    Action(Icons.Filled.FileOpen, "Send files", null), // TODO: Task 10
+                    Action(Icons.Filled.FileOpen, "Send files", "send"), // Task 10 builds SendSheet
                     Action(Icons.Filled.Folder, "Browse PC", "browse"), // Task 6 builds BrowseScreen
                     Action(Icons.Filled.Slideshow, "Stream to PC", null), // TODO: Task 11
                     Action(Icons.Filled.ContentCopy, "Send clipboard", null), // TODO: Task 12

@@ -50,7 +50,7 @@ public sealed class BulkServer : IAsyncDisposable
 
     /// <summary>
     /// Test-only hook: forcibly closes every bulk socket currently open on this server,
-    /// simulating a dropped link mid-transfer (spec §5) the way <c>TwoPeers.BreakControlConnectionAsync</c>
+    /// simulating a dropped link mid-transfer (spec §5) the way <c>TwoPeers.BreakControlConnection</c>
     /// does for the control channel. Each in-flight <c>PullRangeAsync</c> reader on the client
     /// side will fail its next read, forcing <c>BulkClient.DownloadAsync</c> — and therefore
     /// <c>PeerHost</c>'s resume-from-chunk-bitmap path — to actually run.

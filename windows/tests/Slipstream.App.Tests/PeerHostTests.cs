@@ -64,7 +64,7 @@ public class PeerHostTests : IAsyncLifetime
         var states = new List<PeerConnectionState>();
         host.StateChanged += (s, _, _) => { lock (states) states.Add(s); };
 
-        await rig.BreakControlConnectionAsync();
+        rig.BreakControlConnection();
         await WaitUntil(() => host.State == PeerConnectionState.Lost, TimeSpan.FromSeconds(10));
 
         Assert.True(await host.ReconnectAsync(_cts.Token));
@@ -177,13 +177,13 @@ public class PeerHostTests : IAsyncLifetime
         var progressBeforeBreak = Interlocked.Read(ref bytesBeforeBreak);
 
         // Break BOTH the control and bulk channels: breaking only the control connection
-        // (as BreakControlConnectionAsync alone would) leaves the in-flight bulk download
+        // (as BreakControlConnection alone would) leaves the in-flight bulk download
         // running on its own already-open socket, so it can simply complete independently
         // while control reconnects in the background — never forcing PeerHost's
         // resume-from-chunk-bitmap path (ResumeAfterDisconnectAsync) to actually run.
         // Severing the bulk socket too makes the in-flight BulkClient.DownloadAsync fail
         // for real, so resume is genuinely required, not just possible.
-        await rig.BreakAllConnectionsAsync();
+        rig.BreakAllConnections();
         rig.Client.RaiseNetworkChanged(); // what NetworkChange delivers in production
 
         var local = await transfer;

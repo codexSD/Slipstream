@@ -91,16 +91,19 @@ public sealed class TwoPeers : IAsyncDisposable
     /// only the TCP/TLS stream dies, exactly as a Wi-Fi handoff or a cable pull would look
     /// to the client's control-channel reader.
     /// </summary>
-    public async Task BreakControlConnectionAsync()
-    {
-        var connections = Server.Server.Connections;
-        foreach (var connection in connections)
-            await connection.DisposeAsync();
-    }
+    /// <remarks>
+    /// Works from the accepted sockets (<c>ControlServer.CloseActiveConnections</c>), not
+    /// from <c>ControlServer.Connections</c>: a connection lands in that collection only
+    /// after this side's TLS handshake and trust check complete, which can be milliseconds
+    /// AFTER the connecting peer already considers itself connected and started pinging.
+    /// Iterating <c>Connections</c> therefore silently missed exactly the connection a test
+    /// had just established, leaving it alive and the client never observing a drop.
+    /// </remarks>
+    public void BreakControlConnection() => Server.Server.CloseActiveConnections();
 
     /// <summary>
     /// Forcibly closes every bulk socket the server currently has open, mid-transfer.
-    /// Unlike <see cref="BreakControlConnectionAsync"/>, this hits the byte-transfer
+    /// Unlike <see cref="BreakControlConnection"/>, this hits the byte-transfer
     /// channel itself, so an in-flight <c>BulkClient.DownloadAsync</c> genuinely fails and
     /// <c>PeerHost</c>'s resume-from-chunk-bitmap path (<c>ResumeAfterDisconnectAsync</c>)
     /// is forced to run, rather than the bulk transfer simply completing independently
@@ -112,10 +115,10 @@ public sealed class TwoPeers : IAsyncDisposable
     /// Severs both the control and bulk channels at once, simulating a full network
     /// change (spec §5) that drops every live socket, not just one of them.
     /// </summary>
-    public async Task BreakAllConnectionsAsync()
+    public void BreakAllConnections()
     {
         BreakBulkConnection();
-        await BreakControlConnectionAsync();
+        BreakControlConnection();
     }
 
     /// <summary>

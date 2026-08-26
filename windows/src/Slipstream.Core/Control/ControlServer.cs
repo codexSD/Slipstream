@@ -22,6 +22,15 @@ public sealed class ControlServer : IAsyncDisposable
     private readonly TcpListener _listener;
     private readonly PairingWindow? _pairingWindow;
     private readonly ConcurrentDictionary<ControlConnection, byte> _connections = new();
+    // Every accepted socket, registered the instant AcceptTcpClientAsync returns — before
+    // the TLS handshake and the trust check that _connections waits for. A remote peer
+    // finishes its side of the handshake and considers the link up while this server's
+    // continuation may not have run yet, so _connections is NOT a complete picture of the
+    // live sockets: anything acting on "every live connection" (shutdown, or a forced
+    // sever) must work from this set or it will silently skip a connection the peer is
+    // already using. See CloseActiveConnections.
+    private readonly HashSet<TcpClient> _liveClients = [];
+    private readonly object _liveClientsLock = new();
 
     public ControlServer(
         DeviceIdentity identity,
@@ -43,8 +52,10 @@ public sealed class ControlServer : IAsyncDisposable
 
     /// <summary>
     /// Every trusted connection currently accepted (i.e. <see cref="PeerConnected"/> is live
-    /// for it). Exposed so callers can observe or, in tests, forcibly sever the live control
-    /// channel without reaching into networking internals.
+    /// for it). Observation only, and deliberately incomplete: a connection appears here only
+    /// once its TLS handshake and fingerprint check have finished on this side, which can be
+    /// *after* the remote peer's handshake completed and it began sending. To act on every
+    /// live socket — severing or shutting down — use <see cref="CloseActiveConnections"/>.
     /// </summary>
     public IReadOnlyCollection<ControlConnection> Connections => _connections.Keys.ToList();
 
@@ -76,7 +87,34 @@ public sealed class ControlServer : IAsyncDisposable
                 continue;
             }
 
+            // Registered here, synchronously in the accept loop, rather than inside
+            // HandleAsync: the socket must be visible to CloseActiveConnections from the
+            // moment it exists, since the peer can complete its half of the handshake and
+            // start using the connection before HandleAsync's first continuation runs.
+            lock (_liveClientsLock)
+                _liveClients.Add(client);
+
             _ = HandleAsync(client, cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// Forcibly closes every socket this server has accepted, including ones still mid
+    /// handshake and therefore not yet in <see cref="Connections"/>. Used on shutdown, and
+    /// by tests that simulate a dropped link (spec §5): the peer process stays up, only the
+    /// TCP/TLS streams die. Closed with a reset rather than a graceful FIN so a peer blocked
+    /// in a read fails immediately instead of waiting on an orderly shutdown.
+    /// </summary>
+    public void CloseActiveConnections()
+    {
+        TcpClient[] clients;
+        lock (_liveClientsLock)
+            clients = [.. _liveClients];
+
+        foreach (var client in clients)
+        {
+            try { client.Client.Close(0); }
+            catch (Exception) { /* best effort: already gone is already severed */ }
         }
     }
 
@@ -129,6 +167,9 @@ public sealed class ControlServer : IAsyncDisposable
         }
         finally
         {
+            lock (_liveClientsLock)
+                _liveClients.Remove(client);
+
             client.Dispose();
         }
     }
@@ -136,6 +177,10 @@ public sealed class ControlServer : IAsyncDisposable
     public ValueTask DisposeAsync()
     {
         _listener.Stop();
+        // Stopping the listener only refuses new connections; without this, every socket
+        // already accepted outlives the server object and keeps running until the caller's
+        // cancellation token happens to fire.
+        CloseActiveConnections();
         return ValueTask.CompletedTask;
     }
 }

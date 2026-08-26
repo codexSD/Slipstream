@@ -81,7 +81,15 @@ class RealPeerController(
     private val playSink: ForwardingPlaySink = ForwardingPlaySink(),
     private val networkBinder: NetworkBinder = NetworkBinder.NONE,
     private val dispatcher: CoroutineDispatcher = Dispatchers.IO,
+    /** Minor finding: the parallel-stream-count setting (Task 9) persisted by [SettingsStore] -
+     * read fresh on every [pull]/[push] rather than hardcoding a stream count, so changing the
+     * setting takes effect on the next transfer. Optional (defaults to null, falling back to the
+     * previous hardcoded 4) so every existing caller/test that never heard of this setting keeps
+     * compiling unchanged - same seam discipline as [playSink]. */
+    private val settingsStore: SettingsStore? = null,
 ) : PeerController {
+
+    private fun parallelStreamCount(): Int = settingsStore?.getParallelStreamCount() ?: 4
 
     private val scope = CoroutineScope(SupervisorJob() + dispatcher)
 
@@ -253,7 +261,7 @@ class RealPeerController(
         val cumulative = AtomicLong(0)
         val job = launch(dispatcher) {
             try {
-                val part = peer.pullFile(endpoint, remotePath, destination, streams = 4) { bytes ->
+                val part = peer.pullFile(endpoint, remotePath, destination, streams = parallelStreamCount()) { bytes ->
                     trySend(TransferProgress(cumulative.addAndGet(bytes), 0L))
                 }
                 trySend(TransferProgress(part.fileSize, part.fileSize))

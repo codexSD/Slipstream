@@ -1,9 +1,14 @@
 package com.slipstream.app.ui.browse
 
 import androidx.lifecycle.ViewModel
+import com.slipstream.app.peer.HistoryEntry
+import com.slipstream.app.peer.HistoryStore
 import com.slipstream.app.peer.PeerController
+import com.slipstream.app.peer.TransferQueue
 import com.slipstream.meridian.component.MeridianUiState
+import java.io.File
 import java.util.Locale
+import java.util.UUID
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -185,6 +190,63 @@ class BrowseViewModel(
                 )
             },
         )
+    }
+
+    /**
+     * C4.2: downloads [remotePath] from the peer into [destination] via the shared
+     * [TransferQueue] (rather than calling [PeerController.pull] directly, per C4's requirement
+     * that every transfer - Send's pushes included - runs through the one queue the Transfers
+     * screen actually observes). Records the outcome into [historyStore] (C3) when supplied,
+     * matching how a completed Send push is recorded.
+     */
+    fun download(
+        remotePath: String,
+        destination: File,
+        size: Long,
+        transferQueue: TransferQueue,
+        historyStore: HistoryStore?,
+        /** Test seam: lets a test await the real, asynchronous completion signal from
+         * [TransferQueue] instead of racing it with a fixed delay. Production call sites don't
+         * need this - the Transfers screen already observes completion via
+         * [TransferQueue.activeTransfersState]. */
+        onComplete: () -> Unit = {},
+        onError: (Throwable) -> Unit = {},
+    ) {
+        val id = UUID.randomUUID().toString()
+        transferQueue.enqueue(
+            id = id,
+            remotePath = remotePath,
+            destination = destination,
+            onProgress = {},
+            onComplete = {
+                recordHistory(historyStore, remotePath, size, HistoryEntry.State.Completed)
+                onComplete()
+            },
+            onError = { _, e ->
+                recordHistory(historyStore, remotePath, size, HistoryEntry.State.Failed)
+                onError(e)
+            },
+        ) { controller.pull(remotePath, destination) }
+    }
+
+    /** Runs on [TransferQueue]'s own background (IO) thread already - calls [HistoryStore.saveSync]
+     * directly rather than hopping onto [viewModelScope] (which defaults to the *Main* dispatcher,
+     * wrong for file IO and, worse, unavailable/uninitialised in a plain JVM unit test that never
+     * calls `Dispatchers.setMain`, which would throw and turn every completed transfer into a
+     * spurious "failed" History entry as well). */
+    private fun recordHistory(historyStore: HistoryStore?, path: String, size: Long, state: HistoryEntry.State) {
+        if (historyStore == null) return
+        historyStore.addEntry(
+            HistoryEntry(
+                id = UUID.randomUUID().toString(),
+                path = path,
+                size = size,
+                timestamp = System.currentTimeMillis(),
+                direction = HistoryEntry.Direction.Pull,
+                state = state,
+            ),
+        )
+        historyStore.saveSync()
     }
 
     /** Closes the local player (or clears a playback error banner) shown for [playHere]. */

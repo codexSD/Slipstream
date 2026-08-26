@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -29,7 +30,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.slipstream.app.peer.HistoryStore
 import com.slipstream.app.peer.PeerController
+import com.slipstream.app.peer.TransferQueue
 import com.slipstream.meridian.MeridianSpacing
 import com.slipstream.meridian.MeridianText
 import com.slipstream.meridian.MeridianTheme
@@ -50,10 +53,16 @@ fun SendSheet(
     modifier: Modifier = Modifier,
     sharedUris: List<Uri> = emptyList(),
     uriResolver: UriResolver? = null,
+    /** C4.1: routes pushes through the shared queue when supplied - see [SendViewModel]'s doc. */
+    transferQueue: TransferQueue? = null,
+    /** C3: records each push's outcome to History when supplied. */
+    historyStore: HistoryStore? = null,
 ) {
     val context = LocalContext.current
     val resolver = remember(context, uriResolver) { uriResolver ?: ContentUriResolver(context) }
-    val viewModel = remember(peerController) { SendViewModel(peerController, resolver) }
+    val viewModel = remember(peerController, transferQueue, historyStore) {
+        SendViewModel(peerController, resolver, transferQueue = transferQueue, historyStore = historyStore)
+    }
     val state by viewModel.state.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
 
@@ -120,7 +129,11 @@ fun SendSheet(
                 verticalArrangement = Arrangement.spacedBy(MeridianSpacing.sm),
             ) {
                 items(state.items, key = { it.relativePath }) { item ->
-                    SendItemRow(item = item, onRemove = { viewModel.remove(item) })
+                    SendItemRow(
+                        item = item,
+                        onRemove = { viewModel.remove(item) },
+                        onPlayOnPeer = { scope.launch { viewModel.playOnPeer(item) } },
+                    )
                 }
             }
 
@@ -136,7 +149,7 @@ fun SendSheet(
 }
 
 @Composable
-private fun SendItemRow(item: SendItem, onRemove: () -> Unit) {
+private fun SendItemRow(item: SendItem, onRemove: () -> Unit, onPlayOnPeer: () -> Unit = {}) {
     val colors = MeridianTheme.colors
     Row(
         modifier = Modifier
@@ -156,6 +169,17 @@ private fun SendItemRow(item: SendItem, onRemove: () -> Unit) {
             color = colors.ink,
             modifier = Modifier.weight(1f),
         )
+        // C2/I2: push-to-play's real entry point (design.md §8) — this item is genuinely a
+        // local file, unlike Browse's old "Play on PC" which fed a remote path into the same
+        // controller call.
+        androidx.compose.material3.TextButton(
+            onClick = onPlayOnPeer,
+            modifier = Modifier
+                .heightIn(min = 44.dp)
+                .testTag("send-play-on-peer-${item.relativePath}"),
+        ) {
+            Text(text = "Play on PC", style = MeridianText.label, color = colors.brand)
+        }
         IconButton(onClick = onRemove, modifier = Modifier.testTag("send-remove-${item.relativePath}")) {
             Icon(imageVector = Icons.Filled.Close, contentDescription = "Remove", tint = colors.inkMuted)
         }

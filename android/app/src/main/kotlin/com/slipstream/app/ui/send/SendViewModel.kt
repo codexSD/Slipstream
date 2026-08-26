@@ -2,10 +2,15 @@ package com.slipstream.app.ui.send
 
 import android.net.Uri
 import androidx.lifecycle.ViewModel
+import com.slipstream.app.peer.HistoryEntry
+import com.slipstream.app.peer.HistoryStore
 import com.slipstream.app.peer.PeerController
 import com.slipstream.app.peer.TransferProgress
+import com.slipstream.app.peer.TransferQueue
 import com.slipstream.core.transfer.FolderExpander
 import java.io.File
+import java.util.UUID
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -56,6 +61,16 @@ class SendViewModel(
     private val controller: PeerController,
     private val uriResolver: UriResolver = FileUriResolver,
     private val dispatcher: CoroutineDispatcher = Dispatchers.IO,
+    /** C4.1: when supplied, [send] routes every push through this shared queue (so it shows up
+     * on the Transfers screen and is cancellable) instead of calling [PeerController.push]
+     * directly. Optional, defaulting to null (the previous direct-push behaviour), so every
+     * existing test that constructs a bare `SendViewModel(FakeController())` keeps passing
+     * unchanged - the two behaviours are asserted equivalent for the paths those tests already
+     * cover, and a new test asserts the queued path actually calls [TransferQueue.enqueue]. */
+    private val transferQueue: TransferQueue? = null,
+    /** C3: records each push's outcome into History, same shape as [com.slipstream.app.ui.browse.BrowseViewModel.download]'s
+     * recording of a pull's outcome. Optional for the same reason as [transferQueue]. */
+    private val historyStore: HistoryStore? = null,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(SendState())
@@ -106,15 +121,83 @@ class SendViewModel(
                 break
             }
             try {
-                controller.push(item.localPath, item.relativePath).collect { progress ->
-                    _state.update { it.copy(progress = it.progress + (item.relativePath to progress)) }
-                }
+                pushItem(item)
                 _state.update { it.copy(items = it.items - item) }
             } catch (e: Exception) {
                 _state.update { it.copy(message = e.message ?: "Send failed.") }
             }
         }
         _state.update { it.copy(sending = false) }
+    }
+
+    /** Pushes one [item], either directly (no [transferQueue] wired - the previous behaviour,
+     * kept so this class's existing tests are unaffected) or through the shared [transferQueue]
+     * (C4.1) so the push shows up on the Transfers screen and is cancellable exactly like a
+     * Browse-screen download (C4.2). Either way, records the outcome to [historyStore] (C3). */
+    private suspend fun pushItem(item: SendItem) {
+        val queue = transferQueue
+        if (queue == null) {
+            controller.push(item.localPath, item.relativePath).collect { progress ->
+                _state.update { it.copy(progress = it.progress + (item.relativePath to progress)) }
+            }
+            recordHistory(item, HistoryEntry.State.Completed)
+            return
+        }
+
+        val id = UUID.randomUUID().toString()
+        val done = CompletableDeferred<Result<Unit>>()
+        queue.enqueue(
+            id = id,
+            remotePath = item.relativePath,
+            destination = File(item.localPath),
+            onProgress = { progress ->
+                _state.update { it.copy(progress = it.progress + (item.relativePath to progress)) }
+            },
+            onComplete = {
+                recordHistory(item, HistoryEntry.State.Completed)
+                done.complete(Result.success(Unit))
+            },
+            onError = { _, e ->
+                recordHistory(item, HistoryEntry.State.Failed)
+                done.complete(Result.failure(e))
+            },
+        ) { controller.push(item.localPath, item.relativePath) }
+        done.await().getOrThrow()
+    }
+
+    /** Same reasoning as [com.slipstream.app.ui.browse.BrowseViewModel]'s equivalent: saved
+     * synchronously via [HistoryStore.saveSync] rather than hopping onto a ViewModel scope's Main
+     * dispatcher, which is both the wrong dispatcher for file IO and unavailable in a plain unit
+     * test that never calls `Dispatchers.setMain`. */
+    private fun recordHistory(item: SendItem, state: HistoryEntry.State) {
+        val store = historyStore ?: return
+        store.addEntry(
+            HistoryEntry(
+                id = UUID.randomUUID().toString(),
+                path = item.localPath,
+                size = item.size,
+                timestamp = System.currentTimeMillis(),
+                direction = HistoryEntry.Direction.Push,
+                state = state,
+            ),
+        )
+        store.saveSync()
+    }
+
+    /**
+     * C2/I2: push-to-play (design.md §8) for a *queued* item — [item.localPath] is a file this
+     * device already owns, exactly what [PeerController.streamOnPeer] expects (a path on the
+     * caller's own filesystem, never resolved against any root). This is now push-to-play's real
+     * entry point: Browse's old "Play on PC" fed a *remote* path into [PeerController.streamOnPeer]
+     * (a peer-owned file has no use case for the peer streaming it to itself), so it was removed
+     * there; here the file genuinely is local, matching the controller's contract.
+     */
+    suspend fun playOnPeer(item: SendItem): Result<Unit> = withContext(dispatcher) {
+        val result = controller.streamOnPeer(item.localPath)
+        result.onFailure { error ->
+            _state.update { it.copy(message = error.message ?: "Couldn't start playback on the peer.") }
+        }
+        result
     }
 
     private fun enqueue(newItems: List<SendItem>) {

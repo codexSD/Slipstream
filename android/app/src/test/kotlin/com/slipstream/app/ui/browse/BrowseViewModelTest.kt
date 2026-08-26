@@ -1,5 +1,7 @@
 package com.slipstream.app.ui.browse
 
+import com.slipstream.app.peer.HistoryEntry
+import com.slipstream.app.peer.HistoryStore
 import com.slipstream.app.peer.ListResult
 import com.slipstream.app.peer.PairingProgress
 import com.slipstream.app.peer.PeerConnectionState
@@ -7,6 +9,7 @@ import com.slipstream.app.peer.PeerController
 import com.slipstream.app.peer.PeerStatus
 import com.slipstream.app.peer.PlayRequest
 import com.slipstream.app.peer.TransferProgress
+import com.slipstream.app.peer.TransferQueue
 import com.slipstream.core.files.FileEntry
 import com.slipstream.meridian.component.MeridianUiState
 import java.io.File
@@ -64,7 +67,10 @@ private class FakeController(
 
     override fun pull(remotePath: String, destination: File): Flow<TransferProgress> {
         downloads.add(remotePath)
-        return MutableSharedFlow()
+        // A completing flow (rather than a MutableSharedFlow that never finishes) so a test
+        // driving TransferQueue.enqueue's real completion callback can actually observe it -
+        // see the C4/C3 download tests below.
+        return kotlinx.coroutines.flow.flow { emit(TransferProgress(10L, 10L)) }
     }
 
     override fun push(localPath: String, remoteName: String): Flow<TransferProgress> {
@@ -245,6 +251,59 @@ class BrowseViewModelTest {
 
         assertEquals(listOf("stream.request", "play"), controller.sentTypes)
         assertTrue(controller.downloads.isEmpty())
+    }
+
+    @Test
+    fun `C4 download enqueues a pull through the shared TransferQueue`() = kotlinx.coroutines.runBlocking {
+        val controller = FakeController()
+        val vm = BrowseViewModel(controller)
+        val queue = TransferQueue()
+        val destination = File.createTempFile("browse-download-test", ".bin").apply { delete() }
+        val done = CompletableDeferred<Unit>()
+
+        vm.download(
+            remotePath = "/DCIM/photo.jpg",
+            destination = destination,
+            size = 100L,
+            transferQueue = queue,
+            historyStore = null,
+            onComplete = { done.complete(Unit) },
+        )
+
+        // Enqueuing routes the pull through TransferQueue (which runs on its own real
+        // Dispatchers.IO scope) rather than calling controller.pull() directly - awaiting the
+        // completion signal itself (rather than a fixed delay racing the real background thread)
+        // is what makes this deterministic regardless of how busy that thread pool is.
+        kotlinx.coroutines.withTimeout(5_000) { done.await() }
+        assertEquals(listOf("/DCIM/photo.jpg"), controller.downloads)
+        queue.close()
+    }
+
+    @Test
+    fun `C3 a completed download records a HistoryEntry`() = kotlinx.coroutines.runBlocking {
+        val controller = FakeController()
+        val vm = BrowseViewModel(controller)
+        val queue = TransferQueue()
+        val historyFile = File.createTempFile("history-test", ".json").apply { delete() }
+        val historyStore = HistoryStore(historyFile)
+        val destination = File.createTempFile("browse-download-test2", ".bin").apply { delete() }
+        val done = CompletableDeferred<Unit>()
+
+        vm.download(
+            remotePath = "/DCIM/photo.jpg",
+            destination = destination,
+            size = 100L,
+            transferQueue = queue,
+            historyStore = historyStore,
+            onComplete = { done.complete(Unit) },
+        )
+        kotlinx.coroutines.withTimeout(5_000) { done.await() }
+
+        assertEquals(1, historyStore.entries.value.size)
+        val entry = historyStore.entries.value.first()
+        assertEquals(HistoryEntry.Direction.Pull, entry.direction)
+        assertEquals("/DCIM/photo.jpg", entry.path)
+        queue.close()
     }
 
     @Test

@@ -39,6 +39,11 @@ fun SettingsScreen(
     peerController: PeerController,
     settingsStore: SettingsStore,
     modifier: Modifier = Modifier,
+    /** C1: "Pair a device" now navigates to the real, shared [com.slipstream.app.ui.pairing.PairingScreen]
+     * instead of the previous inline `openPairing()` collector that never called
+     * `confirmPairing` and so could never actually complete a pairing. Defaults to a no-op so
+     * existing tests that don't care about navigation keep compiling unchanged. */
+    onPairDevice: () -> Unit = {},
 ) {
     val scope = rememberCoroutineScope()
     val isPaired by peerController.isPaired.collectAsState()
@@ -164,22 +169,7 @@ fun SettingsScreen(
                         modifier = Modifier.testTag("unpaired-status"),
                     )
                     Button(
-                        onClick = {
-                            scope.launch {
-                                peerController.openPairing().collect { progress ->
-                                    // Handle pairing progress inline
-                                    when (progress) {
-                                        is com.slipstream.app.peer.PairingProgress.CodeReceived -> {
-                                            // Code received; in a full implementation, show it to the user
-                                            // For now, we just acknowledge the flow started
-                                        }
-                                        is com.slipstream.app.peer.PairingProgress.Completed -> {
-                                            // Pairing completed; UI already reflects via isPaired state
-                                        }
-                                    }
-                                }
-                            }
-                        },
+                        onClick = onPairDevice,
                         colors = ButtonDefaults.buttonColors(
                             containerColor = MeridianTheme.colors.brand,
                         ),

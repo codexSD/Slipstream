@@ -4,6 +4,9 @@ import android.content.Context
 import android.os.PowerManager
 import androidx.core.content.getSystemService
 import java.io.File
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 /**
  * Persists and retrieves user settings: parallel stream count, download folder,
@@ -53,7 +56,7 @@ class SettingsStore(private val context: Context) {
         }
     }
 
-    fun getTheme(): Theme {
+    private fun readTheme(): Theme {
         val saved = prefs.getString(KEY_THEME, Theme.System.name)
         return try {
             Theme.valueOf(saved ?: Theme.System.name)
@@ -62,8 +65,19 @@ class SettingsStore(private val context: Context) {
         }
     }
 
+    fun getTheme(): Theme = readTheme()
+
+    /** Reactive mirror of [getTheme] (I1): [SlipstreamNavHost] collects this so flipping the
+     * setting on the Settings screen recomposes [com.slipstream.meridian.MeridianTheme]
+     * immediately, rather than only taking effect after the app is restarted. Backed by the same
+     * SharedPreferences value as [getTheme]/[setTheme] - this is purely an observable view onto
+     * it, not a second source of truth. */
+    private val _themeFlow = MutableStateFlow(readTheme())
+    val themeFlow: StateFlow<Theme> = _themeFlow.asStateFlow()
+
     fun setTheme(theme: Theme) {
         prefs.edit().putString(KEY_THEME, theme.name).apply()
+        _themeFlow.value = theme
     }
 
     fun isBatteryExemptionGranted(): Boolean {

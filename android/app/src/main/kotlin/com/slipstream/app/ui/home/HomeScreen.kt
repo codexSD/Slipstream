@@ -15,6 +15,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -43,7 +44,10 @@ fun HomeScreen(
     navController: NavController,
     modifier: Modifier = Modifier,
 ) {
-    val viewModel = HomeViewModel(peerController)
+    // I4: wrapped in remember (matching Browse/Send/Settings' own pattern) so a recomposition
+    // doesn't construct a fresh HomeViewModel - and the StateFlow it starts collecting from -
+    // every single frame.
+    val viewModel = remember(peerController) { HomeViewModel(peerController) }
     val state by viewModel.state.collectAsStateWithLifecycle()
 
     Column(
@@ -54,7 +58,7 @@ fun HomeScreen(
     ) {
         when (state.mode) {
             HomeMode.NeedsPairing -> {
-                PairingPrompt(message = state.message)
+                PairingPrompt(message = state.message, onStartPairing = { navController.navigate("pairing") })
             }
 
             HomeMode.Ready -> {
@@ -80,15 +84,18 @@ fun HomeScreen(
                     unit = if (state.transferRateMbps != null) "MB/s" else null,
                 )
 
-                // Action tiles grid
-                // Only "Browse PC" routes to an existing destination (Task 6).
-                // "Send files" (Task 10), "Stream to PC" (Task 11), "Send clipboard" (Task 12)
-                // navigate to routes that don't exist yet — guard them with null to prevent crashes.
+                // Action tiles grid.
+                // I2: "Stream to PC" (push-to-play, design.md §8) starts with picking a *local*
+                // file to push, not a remote one already on the PC (see this task's C2/I2 report
+                // for why) — the Send screen already owns exactly that "pick a local file" flow
+                // and now carries its own "Play on PC" action per queued item, so this tile
+                // simply opens Send rather than duplicating a picker here. "Send clipboard" opens
+                // the minimal text-field-and-send flow built for this task.
                 val actions = listOf(
                     Action(Icons.Filled.FileOpen, "Send files", "send"), // Task 10 builds SendSheet
                     Action(Icons.Filled.Folder, "Browse PC", "browse"), // Task 6 builds BrowseScreen
-                    Action(Icons.Filled.Slideshow, "Stream to PC", null), // TODO: Task 11
-                    Action(Icons.Filled.ContentCopy, "Send clipboard", null), // TODO: Task 12
+                    Action(Icons.Filled.Slideshow, "Stream to PC", "send"),
+                    Action(Icons.Filled.ContentCopy, "Send clipboard", "clipboard"),
                 )
 
                 Row(
@@ -114,7 +121,7 @@ fun HomeScreen(
 }
 
 @Composable
-private fun PairingPrompt(message: String, modifier: Modifier = Modifier) {
+private fun PairingPrompt(message: String, onStartPairing: () -> Unit, modifier: Modifier = Modifier) {
     Column(
         modifier = modifier
             .fillMaxWidth()
@@ -123,9 +130,9 @@ private fun PairingPrompt(message: String, modifier: Modifier = Modifier) {
     ) {
         Text(text = message)
 
-        // TODO: Task 5 (pairing screen) — check if "pairing" route exists in SlipstreamNavHost;
-        // if yes, navigate there; if no, this button is a no-op placeholder.
-        Button(onClick = { /* TODO: navigate to pairing */ }) {
+        // C1: the "pairing" route now exists (SlipstreamNavHost) — routes to the real,
+        // fully-tested PairingScreen instead of doing nothing.
+        Button(onClick = onStartPairing) {
             Text("Start Pairing")
         }
     }

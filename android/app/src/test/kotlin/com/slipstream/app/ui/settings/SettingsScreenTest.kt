@@ -103,13 +103,20 @@ class SettingsScreenTest {
     }
 
     @Test
-    fun `pair button calls openPairing when clicked`() {
+    fun `pair button navigates to the pairing screen instead of calling openPairing directly`() {
+        // C1: Settings' "Pair a device" previously called controller.openPairing() itself but
+        // never confirmed the resulting code (no confirmPairing call), so it could never actually
+        // complete a pairing. It now navigates to the real, shared PairingScreen (which does
+        // confirm) via onPairDevice, so this asserts the navigation callback fires and that
+        // openPairing is no longer called directly from this screen.
         peerController = SpyPeerController(paired = false)
+        var navigated = false
         compose.setContent {
             MeridianTheme {
                 SettingsScreen(
                     peerController = peerController,
                     settingsStore = settingsStore,
+                    onPairDevice = { navigated = true },
                 )
             }
         }
@@ -117,9 +124,11 @@ class SettingsScreenTest {
         compose.onNodeWithTag("pair-button").performScrollTo().performClick()
         compose.waitForIdle()
 
-        // Verify that openPairing was called on the controller
-        assertTrue("openPairing should be called after clicking pair button",
-                   peerController.openPairingCalled)
+        assertTrue("clicking pair button should navigate to the pairing screen", navigated)
+        assertTrue(
+            "Settings should no longer call openPairing directly - PairingScreen owns that flow",
+            !peerController.openPairingCalled,
+        )
     }
 
     @Test

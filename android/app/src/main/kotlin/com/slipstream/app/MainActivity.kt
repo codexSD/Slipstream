@@ -6,6 +6,10 @@ import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
 import com.slipstream.app.permissions.PermissionGate
 import com.slipstream.app.ui.SlipstreamNavHost
@@ -35,12 +39,32 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             val app = application as SlipstreamApplication
+            var sharedUris by remember { mutableStateOf(sharedUrisFromIntent(intent)) }
+            currentSharedUrisSetter = { sharedUris = it }
             SlipstreamNavHost(
                 peerController = app.peerController,
                 settingsStore = app.settingsStore,
-                sharedUris = sharedUrisFromIntent(intent),
+                sharedUris = sharedUris,
             )
         }
+    }
+
+    /** Set by [onCreate]'s composition so [onNewIntent] can push freshly-shared URIs into the
+     * already-running composition, rather than only ever reading [getIntent] once at launch. */
+    private var currentSharedUrisSetter: ((List<Uri>) -> Unit)? = null
+
+    /**
+     * Minor finding: a share-sheet `ACTION_SEND`/`ACTION_SEND_MULTIPLE` intent arriving while
+     * Slipstream is already running (singleTop/singleTask launch mode) previously landed here
+     * silently, since [onCreate] only ever reads the intent once at launch. Re-extracts the
+     * shared URI(s) the same way [onCreate] does and routes them the same way, then calls
+     * [setIntent] so a later [getIntent] (e.g. after a config change) sees the new intent instead
+     * of the stale launch one.
+     */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        currentSharedUrisSetter?.invoke(sharedUrisFromIntent(intent))
     }
 
     /**

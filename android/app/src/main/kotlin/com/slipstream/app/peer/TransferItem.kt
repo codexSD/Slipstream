@@ -3,17 +3,38 @@ package com.slipstream.app.peer
 import java.io.File
 import kotlin.math.absoluteValue
 
-/** A single item in the transfer queue, tracking progress and formatting it for display. */
+/** A single item in the transfer queue, tracking progress and formatting it for display.
+ * [id] is the same id [TransferQueue.enqueue]/[TransferQueue.cancel] use — kept distinct from
+ * [remotePath] (which is not guaranteed unique, e.g. re-enqueueing the same path from History)
+ * so the Transfers screen's cancel action always cancels the right in-flight item. */
 data class TransferItem(
     val remotePath: String,
     val totalBytes: Long,
+    val id: String = remotePath,
+    val state: State = State.Transferring,
 ) {
+    /** Terminal/in-flight state for the status pill (C4.4). */
+    enum class State { Transferring, Complete, Failed }
+
     var bytesTransferred: Long = 0L
         private set
     var rateBytes: Double = 0.0
         private set
     var lastUpdateTimeMs: Long = System.currentTimeMillis()
         private set
+    var currentState: State = state
+        private set
+
+    /** Marks this item Complete, for the brief moment (C4.4) between the transfer finishing and
+     * [TransferQueue] removing it from the active list. */
+    fun markComplete() {
+        currentState = State.Complete
+    }
+
+    /** Marks this item Failed, same lifecycle as [markComplete]. */
+    fun markFailed() {
+        currentState = State.Failed
+    }
 
     /** Cumulative size display, e.g. "512 MB" or "1.0 / 4.0 GB" with matching units. */
     val sizeText: String

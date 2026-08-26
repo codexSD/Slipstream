@@ -49,6 +49,9 @@ fun TransfersScreen(
     peerController: PeerController,
     modifier: Modifier = Modifier,
     transfersState: StateFlow<List<TransferItem>>? = null,
+    /** C4.3: cancels the transfer by id via the shared TransferQueue. Defaults to a no-op so
+     * existing previews/tests that don't care about cancellation keep compiling unchanged. */
+    onCancel: (String) -> Unit = {},
 ) {
     val colors = MeridianTheme.colors
     val transfers by transfersState?.collectAsStateWithLifecycle() ?: androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(emptyList()) }
@@ -77,10 +80,10 @@ fun TransfersScreen(
                 .padding(MeridianSpacing.md),
             verticalArrangement = Arrangement.spacedBy(MeridianSpacing.md),
         ) {
-            items(transfers, key = { it.remotePath }) { item ->
+            items(transfers, key = { it.id }) { item ->
                 TransferRow(
                     item = item,
-                    onCancel = { /* cancel callback will be wired by parent */ },
+                    onCancel = { onCancel(item.id) },
                 )
             }
         }
@@ -155,10 +158,15 @@ private fun TransferRow(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            // Status pill (showing "Transferring" for active transfers)
+            // C4.4: a real Complete/Failed/Transferring status, not a hardcoded "Transferring".
+            val (pillStatus, pillLabel) = when (item.currentState) {
+                TransferItem.State.Transferring -> MeridianStatus.Info to "Transferring"
+                TransferItem.State.Complete -> MeridianStatus.Positive to "Complete"
+                TransferItem.State.Failed -> MeridianStatus.Critical to "Failed"
+            }
             MeridianStatusPill(
-                status = MeridianStatus.Info,
-                label = "Transferring",
+                status = pillStatus,
+                label = pillLabel,
                 modifier = Modifier.testTag("transfer-status-${item.remotePath}"),
             )
 

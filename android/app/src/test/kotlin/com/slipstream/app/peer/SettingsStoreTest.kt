@@ -115,6 +115,23 @@ class SettingsStoreTest {
     }
 
     @Test
+    fun `I1 themeFlow reflects the initial persisted value`() {
+        store.setTheme(SettingsStore.Theme.Dark)
+        val newStore = SettingsStore(context)
+        assertEquals(SettingsStore.Theme.Dark, newStore.themeFlow.value)
+    }
+
+    @Test
+    fun `I1 themeFlow emits immediately on setTheme, without recreating the store`() {
+        assertEquals(SettingsStore.Theme.System, store.themeFlow.value)
+
+        store.setTheme(SettingsStore.Theme.Dark)
+
+        assertEquals(SettingsStore.Theme.Dark, store.themeFlow.value)
+        assertEquals(SettingsStore.Theme.Dark, store.getTheme())
+    }
+
+    @Test
     fun batteryExemptionStatus_reflects_real_check() {
         assertFalse(store.isBatteryExemptionGranted())
         // Grant exemption via shadow

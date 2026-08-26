@@ -12,7 +12,6 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.lifecycle.viewmodel.compose.viewModel
 import com.slipstream.meridian.MeridianSpacing
 import com.slipstream.meridian.MeridianText
 import com.slipstream.meridian.MeridianTheme
@@ -23,8 +22,8 @@ import com.slipstream.meridian.MeridianTheme
  */
 @Composable
 fun HistoryScreen(
+    viewModel: HistoryViewModel,
     modifier: Modifier = Modifier,
-    viewModel: HistoryViewModel = viewModel(),
 ) {
     val entries by viewModel.entries.collectAsState()
 

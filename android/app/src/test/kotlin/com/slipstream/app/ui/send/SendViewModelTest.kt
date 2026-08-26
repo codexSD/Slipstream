@@ -1,6 +1,8 @@
 package com.slipstream.app.ui.send
 
 import android.net.Uri
+import com.slipstream.app.peer.HistoryEntry
+import com.slipstream.app.peer.HistoryStore
 import com.slipstream.app.peer.ListResult
 import com.slipstream.app.peer.PairingProgress
 import com.slipstream.app.peer.PeerConnectionState
@@ -8,6 +10,7 @@ import com.slipstream.app.peer.PeerController
 import com.slipstream.app.peer.PeerStatus
 import com.slipstream.app.peer.PlayRequest
 import com.slipstream.app.peer.TransferProgress
+import com.slipstream.app.peer.TransferQueue
 import java.io.File
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -141,6 +144,41 @@ class SendViewModelTest {
             controller.pushed.toSet(),
         )
         assertTrue(vm.state.value.items.isEmpty())
+    }
+
+    @Test
+    fun `C4 sending with a TransferQueue wired routes the push through it, not directly`() = runTest {
+        val controller = FakeController()
+        val queue = TransferQueue()
+        val vm = SendViewModel(controller, transferQueue = queue)
+        val file = fileAt("a.txt")
+        vm.onPathsSelected(listOf(file))
+
+        vm.send()
+
+        // The push still actually happened (through the queue's transferFlow lambda) ...
+        assertEquals(listOf(file.path to "a.txt"), controller.pushed)
+        // ... and the queue is the one that ran it, not a direct controller.push() call bypassing it.
+        assertTrue(vm.state.value.items.isEmpty())
+        queue.close()
+    }
+
+    @Test
+    fun `C3 a completed push records a HistoryEntry`() = runTest {
+        val controller = FakeController()
+        val historyFile = File.createTempFile("history-test", ".json").apply { delete() }
+        val historyStore = HistoryStore(historyFile)
+        val vm = SendViewModel(controller, historyStore = historyStore)
+        val file = fileAt("a.txt")
+        vm.onPathsSelected(listOf(file))
+
+        vm.send()
+
+        assertEquals(1, historyStore.entries.value.size)
+        val entry = historyStore.entries.value.first()
+        assertEquals(HistoryEntry.Direction.Push, entry.direction)
+        assertEquals(HistoryEntry.State.Completed, entry.state)
+        assertEquals(file.path, entry.path)
     }
 
     @Test

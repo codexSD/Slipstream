@@ -20,11 +20,13 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -36,7 +38,11 @@ import com.slipstream.app.peer.PeerStatus
 import com.slipstream.app.peer.SettingsStore
 import com.slipstream.app.SlipstreamApplication
 import com.slipstream.app.ui.browse.BrowseScreen
+import com.slipstream.app.ui.history.HistoryScreen
+import com.slipstream.app.ui.history.HistoryViewModel
 import com.slipstream.app.ui.home.HomeScreen
+import com.slipstream.app.ui.pairing.PairingScreen
+import com.slipstream.app.ui.pairing.PairingViewModel
 import com.slipstream.app.ui.send.SendSheet
 import com.slipstream.app.ui.settings.SettingsScreen
 import com.slipstream.app.ui.transfers.TransfersScreen
@@ -102,11 +108,17 @@ fun SlipstreamNavHost(
 ) {
     val peerStatus = peerController.status
     val context = LocalContext.current
-    val transferQueue = (context.applicationContext as SlipstreamApplication).transferQueue
+    val application = context.applicationContext as SlipstreamApplication
+    val transferQueue = application.transferQueue
+    val historyStore = application.historyStore
+
+    // I1: collected reactively (rather than read once via settingsStore.getTheme()) so flipping
+    // the setting on the Settings screen recomposes MeridianTheme immediately.
+    val theme by settingsStore.themeFlow.collectAsStateWithLifecycle()
 
     // Determine darkTheme based on user preference.
     // This is the only call site of isSystemInDarkTheme (constraint from spec §13).
-    val darkTheme = when (settingsStore.getTheme()) {
+    val darkTheme = when (theme) {
         SettingsStore.Theme.Light -> false
         SettingsStore.Theme.Dark -> true
         SettingsStore.Theme.System -> isSystemInDarkTheme()
@@ -177,6 +189,9 @@ fun SlipstreamNavHost(
                 composable(SlipstreamDestination.Browse.route) {
                     BrowseScreen(
                         peerController = peerController,
+                        settingsStore = settingsStore,
+                        transferQueue = transferQueue,
+                        historyStore = historyStore,
                         modifier = Modifier.testTag("screen-content"),
                     )
                 }
@@ -184,6 +199,20 @@ fun SlipstreamNavHost(
                     TransfersScreen(
                         peerController = peerController,
                         transfersState = transferQueue.activeTransfersState,
+                        onCancel = { id -> transferQueue.cancel(id) },
+                        modifier = Modifier.testTag("screen-content"),
+                    )
+                }
+                // C3: History is now a real screen, backed by the application-scoped HistoryStore
+                // singleton (so it observes entries written by Send/Browse via the shared
+                // TransferQueue), and re-enqueues through the same shared TransferQueue rather
+                // than a no-op.
+                composable(SlipstreamDestination.History.route) {
+                    val historyViewModel = remember(historyStore, transferQueue, peerController) {
+                        HistoryViewModel(historyStore, transferQueue, peerController)
+                    }
+                    HistoryScreen(
+                        viewModel = historyViewModel,
                         modifier = Modifier.testTag("screen-content"),
                     )
                 }
@@ -191,6 +220,7 @@ fun SlipstreamNavHost(
                     SettingsScreen(
                         peerController = peerController,
                         settingsStore = settingsStore,
+                        onPairDevice = { navController.navigate("pairing") },
                         modifier = Modifier.testTag("screen-content"),
                     )
                 }
@@ -199,19 +229,27 @@ fun SlipstreamNavHost(
                 composable("send") {
                     SendSheet(
                         peerController = peerController,
+                        transferQueue = transferQueue,
+                        historyStore = historyStore,
                         sharedUris = sharedUris,
                         modifier = Modifier.testTag("screen-content"),
                     )
                 }
-                SlipstreamDestination.entries.filterNot {
-                    it == SlipstreamDestination.Home ||
-                        it == SlipstreamDestination.Browse ||
-                        it == SlipstreamDestination.Transfers ||
-                        it == SlipstreamDestination.Settings
-                }.forEach { destination ->
-                    composable(destination.route) {
-                        Text(destination.label, modifier = Modifier.testTag("screen-content"))
-                    }
+                // C1: pairing is now reachable — from Home's "Start Pairing" prompt (unpaired
+                // devices) and from Settings' "Pair a device" button, both routed here for one
+                // consistent flow (see this task's report for why Settings' previous inline,
+                // never-confirming flow was replaced rather than kept as a "lighter" alternative).
+                composable("pairing") {
+                    val pairingViewModel = remember(peerController) { PairingViewModel(peerController) }
+                    PairingScreen(viewModel = pairingViewModel)
+                }
+                // I2: Home's "Send clipboard" tile - a minimal text-field-and-send-button flow
+                // over PeerController.sendClipboard, modelled on Settings' plain Button pattern.
+                composable("clipboard") {
+                    com.slipstream.app.ui.clipboard.ClipboardScreen(
+                        peerController = peerController,
+                        modifier = Modifier.testTag("screen-content"),
+                    )
                 }
             }
         }

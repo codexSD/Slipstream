@@ -50,6 +50,7 @@ object ThumbnailLoader {
             connectTimeout = CONNECT_TIMEOUT_MS
             readTimeout = READ_TIMEOUT_MS
             requestMethod = "GET"
+            instanceFollowRedirects = false
             try {
                 if (responseCode != HttpURLConnection.HTTP_OK) return null
                 val bytes = inputStream.use { it.readBytes() }

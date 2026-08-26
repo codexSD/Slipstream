@@ -99,7 +99,7 @@ class TransferQueue(private val scope: CoroutineScope = CoroutineScope(Dispatche
 
     private suspend fun processTransfer(transfer: QueuedTransfer) {
         try {
-            val item = TransferItem(transfer.remotePath, 0L)
+            val item = TransferItem(remotePath = transfer.remotePath, totalBytes = 0L, id = transfer.id)
             activeTransfers[transfer.id] = item
             _activeTransfersState.value = activeTransfers.values.toList()
 
@@ -134,8 +134,12 @@ class TransferQueue(private val scope: CoroutineScope = CoroutineScope(Dispatche
                 }
             }
 
+            item.markComplete()
+            _activeTransfersState.value = activeTransfers.values.toList()
             transfer.onComplete()
         } catch (e: Throwable) {
+            activeTransfers[transfer.id]?.markFailed()
+            _activeTransfersState.value = activeTransfers.values.toList()
             transfer.onError?.invoke(transfer.id, e)
         } finally {
             activeTransfers.remove(transfer.id)

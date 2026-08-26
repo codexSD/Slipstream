@@ -21,6 +21,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -47,7 +48,10 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.media3.common.MediaItem
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
+import com.slipstream.app.peer.HistoryStore
 import com.slipstream.app.peer.PeerController
+import com.slipstream.app.peer.SettingsStore
+import com.slipstream.app.peer.TransferQueue
 import com.slipstream.meridian.MeridianRadius
 import com.slipstream.meridian.MeridianSpacing
 import com.slipstream.meridian.MeridianText
@@ -55,6 +59,7 @@ import com.slipstream.meridian.MeridianTheme
 import com.slipstream.meridian.component.MeridianFilterChip
 import com.slipstream.meridian.component.MeridianListRow
 import com.slipstream.meridian.component.MeridianStateView
+import java.io.File
 import java.text.DateFormat
 import java.util.Date
 import java.util.Locale
@@ -70,6 +75,16 @@ fun BrowseScreen(
     peerController: PeerController,
     modifier: Modifier = Modifier,
     initialPath: String = "/",
+    /** C4.2: download destination folder — [SettingsStore.getDownloadFolder] (Task 9) when
+     * supplied, else the row falls back to the platform cache dir via [BrowseViewModel]'s own
+     * default. Optional so existing call sites/tests that predate the download action keep
+     * compiling unchanged. */
+    settingsStore: SettingsStore? = null,
+    /** C4.2/C4.5: shared queue a download is enqueued into, so it shows up on the Transfers
+     * screen exactly like a Send-screen push does. */
+    transferQueue: TransferQueue? = null,
+    /** C3: records a completed/failed download into History, same as a completed Send. */
+    historyStore: HistoryStore? = null,
 ) {
     val viewModel = remember(peerController) { BrowseViewModel(peerController) }
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -151,11 +166,24 @@ fun BrowseScreen(
                                     scope.launch { viewModel.open(entry) }
                                 }
                             },
-                            onPlayOnPeer = {
-                                scope.launch { viewModel.playOnPeer(currentFilePath(state.currentPath, entry)) }
-                            },
                             onPlayHere = {
                                 scope.launch { viewModel.playHere(currentFilePath(state.currentPath, entry)) }
+                            },
+                            onDownload = if (transferQueue != null && !entry.isDirectory) {
+                                {
+                                    val remotePath = currentFilePath(state.currentPath, entry)
+                                    val folder = settingsStore?.getDownloadFolder()
+                                    val destination = File(folder ?: System.getProperty("java.io.tmpdir").orEmpty(), entry.name)
+                                    viewModel.download(
+                                        remotePath = remotePath,
+                                        destination = destination,
+                                        size = entry.size,
+                                        transferQueue = transferQueue,
+                                        historyStore = historyStore,
+                                    )
+                                }
+                            } else {
+                                null
                             },
                         )
                     }
@@ -253,8 +281,10 @@ private fun BrowseEntry.isPlayableMedia(): Boolean =
 private fun BrowseRow(
     entry: BrowseEntry,
     onClick: () -> Unit,
-    onPlayOnPeer: () -> Unit = {},
     onPlayHere: () -> Unit = {},
+    /** C4.2: null hides the action entirely (no shared [com.slipstream.app.peer.TransferQueue]
+     * wired in, or this is a directory row). */
+    onDownload: (() -> Unit)? = null,
 ) {
     Column {
         MeridianListRow(
@@ -264,23 +294,39 @@ private fun BrowseRow(
             onClick = onClick,
             modifier = Modifier.testTag("browse-row-${entry.name}"),
         )
-        if (entry.isPlayableMedia()) {
+        if (entry.isPlayableMedia() || onDownload != null) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(start = MeridianSpacing.md, bottom = MeridianSpacing.xs),
                 horizontalArrangement = Arrangement.spacedBy(MeridianSpacing.md),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                PlaybackActionButton(
-                    label = "Play on PC",
-                    onClick = onPlayOnPeer,
-                    modifier = Modifier.testTag("browse-play-on-peer-${entry.name}"),
-                )
-                PlaybackActionButton(
-                    label = "Play here",
-                    onClick = onPlayHere,
-                    modifier = Modifier.testTag("browse-play-here-${entry.name}"),
-                )
+                // C2: "Play on PC" is no longer offered here — a remote file the peer already
+                // owns has no use case for asking the peer to play it back to itself (see this
+                // task's report). Push-to-play's entry point moved to the Send screen, where a
+                // *local* file is actually picked.
+                if (entry.isPlayableMedia()) {
+                    PlaybackActionButton(
+                        label = "Play here",
+                        onClick = onPlayHere,
+                        modifier = Modifier.testTag("browse-play-here-${entry.name}"),
+                    )
+                }
+                if (onDownload != null) {
+                    IconButton(
+                        onClick = onDownload,
+                        modifier = Modifier
+                            .size(44.dp)
+                            .testTag("browse-download-${entry.name}"),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Download,
+                            contentDescription = "Download",
+                            tint = MeridianTheme.colors.brand,
+                        )
+                    }
+                }
             }
         }
     }

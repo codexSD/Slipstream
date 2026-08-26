@@ -20,6 +20,7 @@ import com.slipstream.core.identity.PairedPeerStore
 import com.slipstream.core.net.AndroidNetworkInfo
 import com.slipstream.app.peer.ForwardingClipboardSink
 import com.slipstream.app.peer.ForwardingPlaySink
+import com.slipstream.app.peer.HistoryStore
 import com.slipstream.app.peer.PeerController
 import com.slipstream.app.peer.PlayRequest
 import com.slipstream.app.peer.RealPeerController
@@ -76,6 +77,7 @@ class SlipstreamApplication : Application() {
             peerStore = wiring.peerStore,
             clipboardSink = clipboardSink,
             playSink = playSink,
+            settingsStore = settingsStore,
         )
     }
 
@@ -90,6 +92,12 @@ class SlipstreamApplication : Application() {
      * `(LocalContext.current.applicationContext as SlipstreamApplication).transferQueue`. */
     val transferQueue: TransferQueue by lazy { TransferQueue() }
 
+    /** Persisted record of completed/failed transfers (Task 8), shared by the History screen and
+     * by whatever completes a transfer (Send screen pushes, Browse screen downloads) so a real
+     * transfer's outcome actually shows up in History (C3) rather than the store sitting unused.
+     * Application-scoped lazy singleton, same pattern as [transferQueue]/[settingsStore]. */
+    val historyStore: HistoryStore by lazy { HistoryStore(File(filesDir, "history.json")) }
+
     override fun onCreate() {
         super.onCreate()
         val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
@@ -102,6 +110,7 @@ class SlipstreamApplication : Application() {
         appScope.launch {
             playSink.received.collect { request -> launchPlayback(request) }
         }
+        appScope.launch { historyStore.load() }
     }
 
     /**

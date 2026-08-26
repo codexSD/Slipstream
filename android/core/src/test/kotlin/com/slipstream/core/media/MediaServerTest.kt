@@ -176,6 +176,35 @@ class MediaServerTest {
     }
 
     @Test
+    fun `a thumb path is served through the same token vault as media`() {
+        val bytes = ByteArray(500) { it.toByte() }
+        val vault = MediaTokenVault()
+        val server = MediaServer(vault, port = 0)
+        try {
+            val token = vault.issue(makeFile(bytes), "image/jpeg")
+            val response = rawHttpGet(server.boundPort, "/thumb/${token.value}")
+
+            assertEquals(200, response.status)
+            assertEquals("bytes", response.headers["accept-ranges"])
+            assertArrayEquals(bytes, response.body)
+        } finally {
+            server.close()
+        }
+    }
+
+    @Test
+    fun `an unknown thumb token returns 404`() {
+        val vault = MediaTokenVault()
+        val server = MediaServer(vault, port = 0)
+        try {
+            val response = rawHttpGet(server.boundPort, "/thumb/${java.util.UUID.randomUUID()}")
+            assertEquals(404, response.status)
+        } finally {
+            server.close()
+        }
+    }
+
+    @Test
     fun `expired token returns 404`() {
         val bytes = ByteArray(10)
         var now = 0L

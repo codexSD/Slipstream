@@ -15,6 +15,7 @@ import com.slipstream.core.identity.PairedPeer
 import com.slipstream.core.identity.PairedPeerStore
 import com.slipstream.core.media.MediaServer
 import com.slipstream.core.media.MediaTokenVault
+import com.slipstream.core.media.ThumbnailProvider
 import com.slipstream.core.net.IpLiteral
 import com.slipstream.core.net.LanGuard
 import com.slipstream.core.net.MutableNetworkBinder
@@ -111,6 +112,11 @@ class SlipstreamPeer(
 
     val bulkTokenVault = TokenVault()
     val mediaTokenVault = MediaTokenVault()
+
+    /** Cached thumbnails live next to, but outside, [rootDirectory] - a sibling directory
+     * rather than a child - so a generated thumbnail never itself shows up as a browsable file
+     * in a `list` of the user's own folders. */
+    private val thumbnailProvider = ThumbnailProvider(File(rootDirectory.parentFile ?: rootDirectory, "thumb-cache"))
 
     private var controlServer: ControlServer? = null
     private var bulkServer: BulkServer? = null
@@ -218,6 +224,7 @@ class SlipstreamPeer(
         mediaTokenVault = mediaTokenVault,
         mediaPort = { mediaServer?.boundPort ?: mediaPort },
         clipboardSink = clipboardSink,
+        thumbnailProvider = thumbnailProvider,
         onBulkIssued = { transferId, file -> recordServedTransfer(transferId, file) },
         onPushOffered = { transferId, token, endpoint, size, destination ->
             handlePushOffered(transferId, token, endpoint, size, destination)

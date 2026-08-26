@@ -3,6 +3,7 @@ package com.slipstream.core.control
 import com.slipstream.core.files.FileBrowser
 import com.slipstream.core.identity.DeviceIdentity
 import com.slipstream.core.media.MediaTokenVault
+import com.slipstream.core.media.ThumbnailProvider
 import com.slipstream.core.transfer.TokenVault
 import java.io.File
 import java.net.InetSocketAddress
@@ -66,6 +67,11 @@ class SlipstreamSession(
     private val mediaTokenVault: MediaTokenVault,
     private val mediaPort: () -> Int,
     private val clipboardSink: ClipboardSink,
+    /** Generates cached thumbnails for image entries returned by `list` (design.md §9). Null
+     * (the default) leaves `list` thumbnail-free - every existing test/caller that never heard
+     * of thumbnails keeps working unchanged. [com.slipstream.core.SlipstreamPeer] is the only
+     * production caller that supplies a real one. */
+    private val thumbnailProvider: ThumbnailProvider? = null,
     private val onBulkIssued: (transferId: UUID, sourceFile: File) -> Unit = { _, _ -> },
     /** Fired once an inbound `push.offer` has been accepted (destination resolved, `push.ok`
      * about to be sent) so the caller ([com.slipstream.core.SlipstreamPeer]) can start actually
@@ -130,6 +136,7 @@ class SlipstreamSession(
         }
         val listing = FileBrowser.list(dir)
         val entries = listing.entries.map { e ->
+            val thumbnailToken = thumbnailTokenFor(dir, e)
             JsonObject(
                 mapOf(
                     "name" to JsonPrimitive(e.name),
@@ -137,6 +144,7 @@ class SlipstreamSession(
                     "mtimeMs" to JsonPrimitive(e.mtimeMs),
                     "isDirectory" to JsonPrimitive(e.isDirectory),
                     "mime" to (e.mime?.let { JsonPrimitive(it) } ?: JsonNull),
+                    "thumbnailToken" to (thumbnailToken?.let { JsonPrimitive(it) } ?: JsonNull),
                 ),
             )
         }
@@ -147,6 +155,20 @@ class SlipstreamSession(
             ),
         )
         return ControlMessage(type = SessionMessageTypes.LIST_OK, id = message.id, payload = payload)
+    }
+
+    /** Cheap thumbnail issuance for one `list` entry: only ever decodes an actual image file
+     * ([ThumbnailProvider.generate] is image-only per its own doc), never attempted-and-failed
+     * on every non-image file in a directory that can have hundreds of entries. Returns null
+     * (no field on the wire) whenever there's no [thumbnailProvider], the entry isn't a regular
+     * image file, or generation failed for this particular file. */
+    private fun thumbnailTokenFor(dir: File, entry: com.slipstream.core.files.FileEntry): String? {
+        val provider = thumbnailProvider ?: return null
+        if (entry.isDirectory) return null
+        if (entry.mime?.startsWith("image/") != true) return null
+        val source = File(dir, entry.name)
+        val thumbnail = provider.generate(source) ?: return null
+        return mediaTokenVault.issue(thumbnail, "image/jpeg").value.toString()
     }
 
     private fun stat(message: ControlMessage): ControlMessage {

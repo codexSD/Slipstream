@@ -9,6 +9,13 @@ data class FileEntry(
     val mtimeMs: Long,
     val isDirectory: Boolean,
     val mime: String?,
+    /** A [com.slipstream.core.media.MediaTokenVault] token for this entry's cached thumbnail,
+     * served from `/thumb/<token>` (design.md §9). Null when this entry isn't an image file, or
+     * a thumbnail couldn't be generated for it. Populated only by
+     * [com.slipstream.core.control.SlipstreamSession.dispatch]'s `list` handler - never by
+     * [FileBrowser] itself, which has no [com.slipstream.core.media.MediaTokenVault] to issue
+     * one from. */
+    val thumbnailToken: String? = null,
 )
 
 /** A capped directory listing. [truncated] is true when the directory held more than the cap. */

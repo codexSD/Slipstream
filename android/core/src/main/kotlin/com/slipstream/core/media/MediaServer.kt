@@ -189,8 +189,7 @@ class MediaServer(
     }
 
     private fun tokenFromPath(path: String): UUID? {
-        val prefix = "/media/"
-        if (!path.startsWith(prefix)) return null
+        val prefix = TOKEN_PATH_PREFIXES.firstOrNull { path.startsWith(it) } ?: return null
         return try {
             UUID.fromString(path.substring(prefix.length).substringBefore('?'))
         } catch (e: IllegalArgumentException) {
@@ -261,5 +260,11 @@ class MediaServer(
         executor.shutdown()
         executor.awaitTermination(5, TimeUnit.SECONDS)
         acceptThread.join(2000)
+    }
+
+    private companion object {
+        /** Two path prefixes route to the same `tokenVault.validate`/`serve` logic - media
+         * files and cached thumbnails are both just bytes behind a token (design.md §9). */
+        val TOKEN_PATH_PREFIXES = listOf("/media/", "/thumb/")
     }
 }

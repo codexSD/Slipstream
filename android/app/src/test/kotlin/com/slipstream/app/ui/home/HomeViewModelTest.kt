@@ -1,5 +1,6 @@
 package com.slipstream.app.ui.home
 
+import app.cash.turbine.test
 import com.slipstream.app.peer.PeerConnectionState
 import com.slipstream.app.peer.PeerController
 import com.slipstream.app.peer.PeerStatus
@@ -8,6 +9,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -44,22 +46,28 @@ private class FakeController(paired: Boolean = true) : PeerController {
 class HomeViewModelTest {
 
     @Test
-    fun `an unpaired device is offered pairing rather than dead actions`() {
+    fun `an unpaired device is offered pairing rather than dead actions`() = runTest {
         val controller = FakeController(paired = false)
-        val state = com.slipstream.app.ui.home.computeHomeScreenState(controller)
-        assertEquals(HomeMode.NeedsPairing, state.mode)
-        assertEquals("Pair a device to get started.", state.message)
+        val vm = HomeViewModel(controller)
+        vm.state.test {
+            val state = awaitItem()
+            assertEquals(HomeMode.NeedsPairing, state.mode)
+            assertEquals("Pair a device to get started.", state.message)
+        }
     }
 
     @Test
-    fun `a paired device shows the Ready mode`() {
+    fun `a paired device shows the Ready mode`() = runTest {
         val controller = FakeController(paired = true)
-        val state = com.slipstream.app.ui.home.computeHomeScreenState(controller)
-        assertEquals(HomeMode.Ready, state.mode)
+        val vm = HomeViewModel(controller)
+        vm.state.test {
+            val state = awaitItem()
+            assertEquals(HomeMode.Ready, state.mode)
+        }
     }
 
     @Test
-    fun `a paired device's header card shows the peer name and connection state`() {
+    fun `a paired device's header card shows the peer name and connection state`() = runTest {
         val controller = FakeController(paired = true)
         controller.setStatus(
             PeerStatus(
@@ -68,8 +76,21 @@ class HomeViewModelTest {
                 band = "5 GHz",
             )
         )
-        val state = com.slipstream.app.ui.home.computeHomeScreenState(controller)
-        assertEquals("Pixel 9", state.peerName)
-        assertEquals(PeerConnectionState.Connected, state.connectionState)
+        val vm = HomeViewModel(controller)
+        vm.state.test {
+            val state = awaitItem()
+            assertEquals("Pixel 9", state.peerName)
+            assertEquals(PeerConnectionState.Connected, state.connectionState)
+            assertEquals("5 GHz", state.band)
+        }
+    }
+
+    // Test that the helper function also works (used by the compose UI test integration)
+    @Test
+    fun `computeHomeScreenState helper computes correct state for unpaired device`() {
+        val controller = FakeController(paired = false)
+        val state = computeHomeScreenState(controller)
+        assertEquals(HomeMode.NeedsPairing, state.mode)
+        assertEquals("Pair a device to get started.", state.message)
     }
 }

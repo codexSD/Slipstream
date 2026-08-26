@@ -10,17 +10,21 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.FileOpen
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Slideshow
+import androidx.compose.material3.Button
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import com.slipstream.app.peer.PeerController
 import com.slipstream.meridian.MeridianSpacing
 import com.slipstream.meridian.component.MeridianHeaderCard
 import com.slipstream.meridian.component.MeridianHeroMetric
 import com.slipstream.meridian.component.MeridianIconTile
+import java.util.Locale
 
 /** The four actions on the ready-to-use home screen. */
 private data class Action(
@@ -40,7 +44,7 @@ fun HomeScreen(
     modifier: Modifier = Modifier,
 ) {
     val viewModel = HomeViewModel(peerController)
-    val state by viewModel.state.collectAsState()
+    val state by viewModel.state.collectAsStateWithLifecycle()
 
     Column(
         modifier = modifier
@@ -50,7 +54,7 @@ fun HomeScreen(
     ) {
         when (state.mode) {
             HomeMode.NeedsPairing -> {
-                PairingPrompt()
+                PairingPrompt(message = state.message)
             }
 
             HomeMode.Ready -> {
@@ -66,7 +70,7 @@ fun HomeScreen(
 
                 // Hero metric: transfer rate or resting label
                 val (value, label) = if (state.transferRateMbps != null) {
-                    Pair("%.1f".format(state.transferRateMbps), "Transfer rate")
+                    Pair(String.format(Locale.US, "%.1f", state.transferRateMbps), "Transfer rate")
                 } else {
                     Pair("—", "Ready")
                 }
@@ -77,11 +81,14 @@ fun HomeScreen(
                 )
 
                 // Action tiles grid
+                // Only "Browse PC" routes to an existing destination (Task 6).
+                // "Send files" (Task 10), "Stream to PC" (Task 11), "Send clipboard" (Task 12)
+                // navigate to routes that don't exist yet — guard them with null to prevent crashes.
                 val actions = listOf(
-                    Action(Icons.Filled.FileOpen, "Send files", "send-files"),
-                    Action(Icons.Filled.Folder, "Browse PC", "browse"),
-                    Action(Icons.Filled.Slideshow, "Stream to PC", "stream-to-pc"),
-                    Action(Icons.Filled.ContentCopy, "Send clipboard", "send-clipboard"),
+                    Action(Icons.Filled.FileOpen, "Send files", null), // TODO: Task 10
+                    Action(Icons.Filled.Folder, "Browse PC", "browse"), // Task 6 builds BrowseScreen
+                    Action(Icons.Filled.Slideshow, "Stream to PC", null), // TODO: Task 11
+                    Action(Icons.Filled.ContentCopy, "Send clipboard", null), // TODO: Task 12
                 )
 
                 Row(
@@ -107,14 +114,19 @@ fun HomeScreen(
 }
 
 @Composable
-private fun PairingPrompt(modifier: Modifier = Modifier) {
+private fun PairingPrompt(message: String, modifier: Modifier = Modifier) {
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .padding(MeridianSpacing.md),
-        verticalArrangement = Arrangement.Center,
+            .padding(MeridianSpacing.lg),
+        verticalArrangement = Arrangement.spacedBy(MeridianSpacing.lg),
     ) {
-        // TODO: Implement pairing prompt UI
-        // For now, just a placeholder
+        Text(text = message)
+
+        // TODO: Task 5 (pairing screen) — check if "pairing" route exists in SlipstreamNavHost;
+        // if yes, navigate there; if no, this button is a no-op placeholder.
+        Button(onClick = { /* TODO: navigate to pairing */ }) {
+            Text("Start Pairing")
+        }
     }
 }

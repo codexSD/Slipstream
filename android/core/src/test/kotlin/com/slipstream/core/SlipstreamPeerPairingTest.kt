@@ -8,6 +8,7 @@ import com.slipstream.core.identity.PairedPeerStore
 import com.slipstream.core.identity.PairingCode
 import com.slipstream.core.net.LocalNetwork
 import com.slipstream.core.net.NetworkInfo
+import java.io.File
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.util.concurrent.CountDownLatch
@@ -69,6 +70,127 @@ class SlipstreamPeerPairingTest {
             bulkPort = 0,
             mediaPort = 0,
         )
+    }
+
+    /** Same construction as [peer], but also returns the root directory so a test can inspect
+     * what actually landed on disk (e.g. after a push). */
+    private fun peerWithRoot(name: String): Pair<SlipstreamPeer, File> {
+        val dir = createTempDirectory().toFile()
+        val networkInfo = LoopbackNetworkInfo()
+        val p = SlipstreamPeer(
+            identity = DeviceIdentity.createNew(name),
+            peerStore = PairedPeerStore(dir),
+            networkInfo = networkInfo,
+            rootDirectory = dir,
+            clipboardSink = ClipboardSink { },
+            discoveryCoordinatorFactory = { DiscoveryCoordinator(networkInfo, cache = null, strategies = emptyList()) },
+            controlPort = 0,
+            bulkPort = 0,
+            mediaPort = 0,
+        )
+        return p to dir
+    }
+
+    /** Pairs [a] and [b] over loopback through the same public pairing API the pairing tests
+     * above exercise, so push/pull tests can start from an already-paired pair without
+     * duplicating that dance inline. */
+    private fun pair(a: SlipstreamPeer, b: SlipstreamPeer) {
+        a.start()
+        b.start()
+        val bDone = CountDownLatch(1)
+        thread(isDaemon = true) {
+            b.awaitPairing(timeout = 20.seconds) { true }
+            bDone.countDown()
+        }
+        val endpoint = requireNotNull(b.controlEndpoint)
+        repeat(50) {
+            if (b.isPairingWindowOpen) return@repeat
+            Thread.sleep(20)
+        }
+        val result = a.initiatePairing(InetSocketAddress(LOOPBACK, endpoint.port)) { true }
+        assertTrue(bDone.await(20, TimeUnit.SECONDS))
+        assertNotNull("pairing must succeed for the push/pull rig to be usable", result)
+    }
+
+    @Test
+    fun `pushFile delivers the file to the peer's root directory`() {
+        val (sender, senderRoot) = peerWithRoot("Sender")
+        val (receiver, receiverRoot) = peerWithRoot("Receiver")
+        try {
+            pair(sender, receiver)
+
+            val delivered = File(senderRoot, "photo.jpg")
+            val bytes = ByteArray(5 * 1024 * 1024) { (it % 251).toByte() }
+            delivered.writeBytes(bytes)
+            val progress = mutableListOf<Long>()
+
+            val ok = sender.pushFile(
+                requireNotNull(receiver.controlEndpoint),
+                delivered,
+                "incoming/photo.jpg",
+            ) { progress.add(it) }
+
+            assertTrue("pushFile must report success", ok)
+            val landed = File(receiverRoot, "incoming/photo.jpg")
+            assertTrue("the pushed file must exist under the receiver's root", landed.exists())
+            assertEquals(delivered.readBytes().toList(), landed.readBytes().toList())
+            assertTrue("progress must add up to at least the full file size", progress.sum() >= delivered.length())
+        } finally {
+            sender.close()
+            receiver.close()
+        }
+    }
+
+    @Test
+    fun `a push offer that escapes the root is refused`() {
+        val (sender, senderRoot) = peerWithRoot("Sender")
+        val (receiver, receiverRoot) = peerWithRoot("Receiver")
+        try {
+            pair(sender, receiver)
+
+            val delivered = File(senderRoot, "secret.txt")
+            delivered.writeBytes(ByteArray(16))
+
+            val ok = sender.pushFile(
+                requireNotNull(receiver.controlEndpoint),
+                delivered,
+                "../../etc/passwd",
+            )
+
+            assertFalse("an escaping push offer must be refused", ok)
+            val escaped = File(receiverRoot.parentFile, "etc/passwd")
+            assertFalse("nothing must be written outside the receiver's root", escaped.exists())
+        } finally {
+            sender.close()
+            receiver.close()
+        }
+    }
+
+    @Test
+    fun `pushFile releases its token when the peer never accepts`() {
+        val (sender, senderRoot) = peerWithRoot("Sender")
+        val (receiver, _) = peerWithRoot("Receiver")
+        try {
+            pair(sender, receiver)
+            // Kill the receiver's control server so the sender's push.offer connection is
+            // refused/closed before a push.ok can ever arrive - the "peer never accepts" case.
+            receiver.close()
+
+            val delivered = File(senderRoot, "photo.jpg")
+            delivered.writeBytes(ByteArray(1024))
+            val before = sender.servedTransferCount
+
+            val ok = sender.pushFile(InetSocketAddress(LOOPBACK, 1), delivered, "photo.jpg")
+
+            assertFalse("pushFile must fail when no push.ok ever arrives", ok)
+            assertEquals(
+                "the token issued for the abandoned push must be released",
+                before,
+                sender.servedTransferCount,
+            )
+        } finally {
+            sender.close()
+        }
     }
 
     @Test

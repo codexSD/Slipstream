@@ -33,6 +33,8 @@ object SessionMessageTypes {
     const val STAT_OK = "stat.ok"
     const val PULL_REQUEST = "pull.request"
     const val PULL_OK = "pull.ok"
+    const val PUSH_OFFER = "push.offer"
+    const val PUSH_OK = "push.ok"
     const val STREAM_REQUEST = "stream.request"
     const val STREAM_OK = "stream.ok"
     const val CLIPBOARD = "clipboard"
@@ -64,6 +66,18 @@ class SlipstreamSession(
     private val mediaPort: () -> Int,
     private val clipboardSink: ClipboardSink,
     private val onBulkIssued: (transferId: UUID, sourceFile: File) -> Unit = { _, _ -> },
+    /** Fired once an inbound `push.offer` has been accepted (destination resolved, `push.ok`
+     * about to be sent) so the caller ([com.slipstream.core.SlipstreamPeer]) can start actually
+     * receiving the bytes from the sender's own [com.slipstream.core.transfer.BulkServer]. Pure
+     * side-effect callback, same discipline as [onBulkIssued]: dispatch never itself touches a
+     * socket or spawns a thread. */
+    private val onPushOffered: (
+        transferId: UUID,
+        token: UUID,
+        endpoint: InetSocketAddress,
+        size: Long,
+        destination: File,
+    ) -> Unit = { _, _, _, _, _ -> },
 ) {
     fun dispatch(message: ControlMessage): ControlMessage? = when (message.type) {
         SessionMessageTypes.HELLO -> helloOk(message)
@@ -71,6 +85,7 @@ class SlipstreamSession(
         SessionMessageTypes.LIST -> list(message)
         SessionMessageTypes.STAT -> stat(message)
         SessionMessageTypes.PULL_REQUEST -> pullRequest(message)
+        SessionMessageTypes.PUSH_OFFER -> pushOffer(message)
         SessionMessageTypes.STREAM_REQUEST -> streamRequest(message)
         SessionMessageTypes.CLIPBOARD -> clipboard(message)
         // Unknown type: ignored, never disconnects (see class doc).
@@ -171,6 +186,52 @@ class SlipstreamSession(
             ),
         )
         return ControlMessage(type = SessionMessageTypes.PULL_OK, id = message.id, payload = payload)
+    }
+
+    /**
+     * Inbound `push.offer`: the sender already owns the bytes and has already issued its own
+     * bulk token for them (the opposite of `pull.request`, where the *responder* issues the
+     * token) - this side's only job is to resolve where the file lands, make room for it, and
+     * accept. This project's trust model is "pair once, then fully silent" (design.md §2): a
+     * push from the one paired peer is always accepted, with no interactive prompt.
+     */
+    private fun pushOffer(message: ControlMessage): ControlMessage {
+        val payload = message.payload
+        val path = payload?.get("path")?.jsonPrimitive?.contentOrNull
+        val destination = resolvePath(path)
+        if (destination == null) {
+            return errorReply(message)
+        }
+        val transferIdRaw = payload?.get("transferId")?.jsonPrimitive?.contentOrNull
+        val tokenRaw = payload?.get("token")?.jsonPrimitive?.contentOrNull
+        val host = payload?.get("host")?.jsonPrimitive?.contentOrNull
+        val port = payload?.get("port")?.jsonPrimitive?.int
+        val size = payload?.get("size")?.jsonPrimitive?.content?.toLongOrNull()
+        if (transferIdRaw == null || tokenRaw == null || host == null || port == null || size == null) {
+            return errorReply(message)
+        }
+        val transferId = try {
+            UUID.fromString(transferIdRaw)
+        } catch (e: IllegalArgumentException) {
+            return errorReply(message)
+        }
+        val token = try {
+            UUID.fromString(tokenRaw)
+        } catch (e: IllegalArgumentException) {
+            return errorReply(message)
+        }
+
+        // A pushed file may target a subfolder that doesn't exist on this device yet - "send a
+        // photo from an empty folder" must not fail merely because the folder isn't there.
+        destination.parentFile?.mkdirs()
+
+        // Unresolved: SlipstreamSession must not itself perform a DNS lookup (or trust a
+        // non-literal host at all) merely to build the address it hands to the callback -
+        // that validation belongs at the point the caller actually connects
+        // (SlipstreamPeer.bulkEndpointFrom mirrors the same check pull.ok's host/port go
+        // through today).
+        onPushOffered(transferId, token, InetSocketAddress.createUnresolved(host, port), size, destination)
+        return ControlMessage(type = SessionMessageTypes.PUSH_OK, id = message.id, payload = JsonObject(emptyMap()))
     }
 
     // --- media streaming ---

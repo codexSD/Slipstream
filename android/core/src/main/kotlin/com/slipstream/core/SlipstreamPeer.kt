@@ -36,6 +36,7 @@ import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.thread
 import kotlin.concurrent.withLock
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
@@ -48,6 +49,10 @@ import kotlinx.serialization.json.long
 
 /** Default chunk size for pulled files; no shared constant exists elsewhere in the module. */
 private const val DEFAULT_CHUNK_SIZE = 256 * 1024
+
+/** Generous bound on how long [SlipstreamPeer.pushFile] waits for its own [BulkServer] to
+ * finish serving the file, standing in for the completion ack this protocol doesn't have. */
+private val PUSH_TIMEOUT = 10.minutes
 
 /**
  * Facade wiring identity, discovery, control, pairing, transfer, and media into one running
@@ -183,6 +188,7 @@ class SlipstreamPeer(
             fileForTransfer = { id -> sourceFileForTransfer[id] },
             port = bulkPort,
             bindAddress = bindAddress,
+            onBytesServed = { transferId, bytes -> onPushBytesServed(transferId, bytes) },
         )
         mediaServer = MediaServer(mediaTokenVault, port = mediaPort, bindAddress = bindAddress)
 
@@ -209,7 +215,148 @@ class SlipstreamPeer(
         mediaPort = { mediaServer?.boundPort ?: mediaPort },
         clipboardSink = clipboardSink,
         onBulkIssued = { transferId, file -> recordServedTransfer(transferId, file) },
+        onPushOffered = { transferId, token, endpoint, size, destination ->
+            handlePushOffered(transferId, token, endpoint, size, destination)
+        },
     )
+
+    // --- push (device-initiated send) ---
+
+    /** Cumulative bytes this device's own [BulkServer] has served for a push it initiated,
+     * keyed by transfer id - how [pushFile] knows "fully served" without a network-level
+     * completion ack (none exists; see [pushFile]'s doc). Only populated for transfers this
+     * device is the *sender* of via [pushFile]; unrelated `pull.request` traffic served by the
+     * same [BulkServer] never has an entry here. */
+    private val pushBytesServed = ConcurrentHashMap<UUID, java.util.concurrent.atomic.AtomicLong>()
+
+    /** Per-push caller progress sinks, routed by transfer id. Keeps [BulkServer] itself a
+     * single dumb global callback rather than something stateful about individual pushes. */
+    private val pushProgressSinks = ConcurrentHashMap<UUID, (Long) -> Unit>()
+
+    private fun onPushBytesServed(transferId: UUID, bytes: Long) {
+        pushBytesServed[transferId]?.addAndGet(bytes)
+        pushProgressSinks[transferId]?.invoke(bytes)
+    }
+
+    /**
+     * Receiving side of a push: an inbound `push.offer` was just accepted (destination
+     * resolved, parent directories created, `push.ok` about to be sent) - this runs the same
+     * [TransferEngine]/[BulkClient] download machinery [pullFile] uses, but against the
+     * *sender's* [endpoint]/[token]/[transferId] rather than one this device negotiated itself,
+     * on a background thread since this is an unsolicited background receive rather than a
+     * caller-blocking call.
+     *
+     * A network change mid-receive is not resumed (this transfer is never added to
+     * [activePulls]) - the brief for this addition only requires a clean receive, not resume
+     * guarantees for the receiving device; a dropped connection here simply leaves a partial
+     * file behind, exactly as an un-resumed [pullFile] failure would.
+     */
+    private fun handlePushOffered(
+        transferId: UUID,
+        token: UUID,
+        endpoint: InetSocketAddress,
+        size: Long,
+        destination: File,
+    ) {
+        thread(isDaemon = true) {
+            val part = try {
+                val validated = bulkEndpointFrom(endpoint.hostString, endpoint.port)
+                val part = PartFile.openOrCreate(destination, transferId, size, DEFAULT_CHUNK_SIZE)
+                try {
+                    transferEngine.pull(part, streams = 1) { BulkSession(validated, transferId, token) }
+                } catch (e: Exception) {
+                    // Best-effort receive; resume-on-push is out of scope (see doc above).
+                }
+                part
+            } catch (e: Exception) {
+                // The offer's own endpoint failed validation (non-literal/non-local host, bad
+                // port) - nothing was ever opened for writing, so there is no PartFile to close.
+                null
+            }
+            if (part != null) finishTransfer(transferId, part)
+        }
+    }
+
+    /**
+     * Sending side of a push: issues this device's own bulk token for [localFile], offers it to
+     * the peer at [peerControlEndpoint] over a short-lived control connection (mirroring
+     * [negotiatePull]'s connect-send-receive-close shape), and - once the peer accepts - blocks
+     * until [localFile] has been fully served out by this device's own [BulkServer], driving
+     * [onProgress] from the bytes that server actually writes.
+     *
+     * There is no network-level "transfer complete" acknowledgement in this protocol (a pull
+     * doesn't have one either), so completion is inferred the same way a caller of `pullFile`
+     * would infer it for the file it's pulling: cumulative bytes served for this transfer id
+     * reaching [File.length]. A generous bounded wait stands in for that ack rather than
+     * blocking forever on a peer that vanished mid-transfer.
+     */
+    fun pushFile(
+        peerControlEndpoint: InetSocketAddress,
+        localFile: File,
+        remoteName: String,
+        onProgress: ((Long) -> Unit)? = null,
+    ): Boolean {
+        val transferId = UUID.randomUUID()
+        val token = bulkTokenVault.issueBulk(transferId, localFile.path, localFile.length(), expectedStreams = 1)
+        recordServedTransfer(transferId, localFile)
+        pushBytesServed[transferId] = java.util.concurrent.atomic.AtomicLong(0)
+        if (onProgress != null) pushProgressSinks[transferId] = onProgress
+        try {
+            val accepted = offerPush(peerControlEndpoint, transferId, token.value, localFile, remoteName)
+            if (!accepted) return false
+
+            val target = localFile.length()
+            val deadlineMs = System.currentTimeMillis() + PUSH_TIMEOUT.inWholeMilliseconds
+            val servedCounter = pushBytesServed.getValue(transferId)
+            while (System.currentTimeMillis() < deadlineMs) {
+                if (servedCounter.get() >= target) return true
+                Thread.sleep(100)
+            }
+            return servedCounter.get() >= target
+        } finally {
+            pushProgressSinks.remove(transferId)
+            pushBytesServed.remove(transferId)
+            completeServedTransfer(transferId)
+        }
+    }
+
+    /** Sends `push.offer` and waits for `push.ok`. Any failure to connect, a closed connection
+     * before a reply arrives, or an `error` reply are all treated the same: the peer never
+     * accepted, so the caller must release the token it issued for nothing. */
+    private fun offerPush(
+        peerControlEndpoint: InetSocketAddress,
+        transferId: UUID,
+        token: UUID,
+        localFile: File,
+        remoteName: String,
+    ): Boolean = try {
+        ControlClient.connect(peerControlEndpoint, identity, peerStore, networkBinder).use { conn ->
+            val myBulkEndpoint = run {
+                val port = bulkServer?.boundPort ?: bulkPort
+                InetSocketAddress(requireNotNull(networkInfo.current()) { "no active network" }.localAddress, port)
+            }
+            conn.send(
+                ControlMessage(
+                    type = SessionMessageTypes.PUSH_OFFER,
+                    id = UUID.randomUUID().toString(),
+                    payload = JsonObject(
+                        mapOf(
+                            "path" to JsonPrimitive(remoteName),
+                            "transferId" to JsonPrimitive(transferId.toString()),
+                            "token" to JsonPrimitive(token.toString()),
+                            "size" to JsonPrimitive(localFile.length()),
+                            "host" to JsonPrimitive(myBulkEndpoint.address.hostAddress),
+                            "port" to JsonPrimitive(myBulkEndpoint.port),
+                        ),
+                    ),
+                ),
+            )
+            val reply = conn.receive() ?: return@use false
+            reply.type == SessionMessageTypes.PUSH_OK
+        }
+    } catch (e: Exception) {
+        false
+    }
 
     /** Records a transfer this device is serving out, and takes the opportunity to expire any
      * that are long over. Internal so a test can exercise the bookkeeping without a wire. */

@@ -40,6 +40,10 @@ sealed interface PairingProgress {
 interface PeerController {
     val status: StateFlow<PeerStatus>
 
+    /** Whether a peer device is currently paired with this device. Updates as the pairing state
+     * changes via [openPairing] and [confirmPairing]. */
+    val isPaired: StateFlow<Boolean>
+
     /** Starts the underlying peer (if not already started), then discovers, connects, and
      * begins the heartbeat loop. Suspends until the first connection attempt has settled
      * (connected or not) — it does not suspend forever waiting for a peer that never appears. */

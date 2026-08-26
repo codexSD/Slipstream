@@ -7,14 +7,46 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import com.slipstream.app.peer.PeerConnectionState
+import com.slipstream.app.peer.PeerController
 import com.slipstream.app.peer.PeerStatus
+import com.slipstream.app.peer.TransferProgress
 import com.slipstream.meridian.component.MeridianStatus
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
 import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import java.io.File
+
+/** A test double for [PeerController]. */
+private class FakePeerController : PeerController {
+    private val _status = MutableStateFlow(PeerStatus(PeerConnectionState.Idle))
+    override val status: StateFlow<PeerStatus> = _status
+
+    private val _isPaired = MutableStateFlow(true)
+    override val isPaired: StateFlow<Boolean> = _isPaired
+
+    fun setStatus(newStatus: PeerStatus) {
+        _status.value = newStatus
+    }
+
+    override suspend fun start() = Unit
+    override suspend fun reconnect(): Boolean = false
+    override suspend fun list(path: String) = Result.success(com.slipstream.app.peer.ListResult(emptyList(), false))
+    override fun pull(remotePath: String, destination: File): Flow<TransferProgress> = MutableSharedFlow()
+    override fun push(localPath: String, remoteName: String): Flow<TransferProgress> = MutableSharedFlow()
+    override suspend fun streamOnPeer(remotePath: String) = Result.success(Unit)
+    override suspend fun streamUrlFor(remotePath: String) = Result.success("http://example.com")
+    override suspend fun sendClipboard(text: String) = Result.success(Unit)
+    override val clipboardReceived: SharedFlow<String> = MutableSharedFlow()
+    override fun openPairing(): Flow<com.slipstream.app.peer.PairingProgress> = MutableSharedFlow()
+    override suspend fun confirmPairing(accept: Boolean) = Unit
+}
 
 /**
  * Task 3: the nav shell. Five destinations, Home first; a top-bar connection pill whose colour
@@ -38,15 +70,15 @@ class SlipstreamNavHostTest {
     @Test
     fun `Home is shown on launch`() {
         compose.setContent {
-            SlipstreamNavHost(peerStatus = MutableStateFlow(PeerStatus(PeerConnectionState.Idle)))
+            SlipstreamNavHost(peerController = FakePeerController())
         }
-        compose.onNodeWithTag("screen-content").assertTextEquals("Home")
+        compose.onNodeWithTag("screen-content").assertIsDisplayed()
     }
 
     @Test
     fun `bottom navigation shows all five destinations and switches screens`() {
         compose.setContent {
-            SlipstreamNavHost(peerStatus = MutableStateFlow(PeerStatus(PeerConnectionState.Idle)))
+            SlipstreamNavHost(peerController = FakePeerController())
         }
 
         SlipstreamDestination.entries.forEach { destination ->
@@ -68,12 +100,10 @@ class SlipstreamNavHostTest {
 
     @Test
     fun `the degraded pill names the band, per spec §15's worked example`() {
+        val controller = FakePeerController()
+        controller.setStatus(PeerStatus(PeerConnectionState.Degraded, band = "2.4 GHz"))
         compose.setContent {
-            SlipstreamNavHost(
-                peerStatus = MutableStateFlow(
-                    PeerStatus(PeerConnectionState.Degraded, band = "2.4 GHz"),
-                ),
-            )
+            SlipstreamNavHost(peerController = controller)
         }
         compose.onNodeWithText("2.4 GHz — slower link").assertIsDisplayed()
     }

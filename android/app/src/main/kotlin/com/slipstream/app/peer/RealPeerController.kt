@@ -81,6 +81,9 @@ class RealPeerController(
     private val _status = MutableStateFlow(PeerStatus(PeerConnectionState.Idle))
     override val status: StateFlow<PeerStatus> = _status.asStateFlow()
 
+    private val _isPaired = MutableStateFlow(peerStore.peer != null)
+    override val isPaired: StateFlow<Boolean> = _isPaired.asStateFlow()
+
     override val clipboardReceived: SharedFlow<String> = clipboardSink.received
 
     @Volatile private var connection: ControlConnection? = null
@@ -337,6 +340,7 @@ class RealPeerController(
                     runBlocking { decision.await() }
                 }
                 trySend(PairingProgress.Completed(paired != null))
+                _isPaired.value = peerStore.peer != null
                 close()
             } catch (e: Exception) {
                 close(e)

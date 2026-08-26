@@ -33,7 +33,7 @@ class MainActivity : ComponentActivity() {
         maybeRequestBatteryOptimizationExemption()
 
         setContent {
-            SlipstreamNavHost(peerStatus = (application as SlipstreamApplication).peerController.status)
+            SlipstreamNavHost(peerController = (application as SlipstreamApplication).peerController)
         }
     }
 

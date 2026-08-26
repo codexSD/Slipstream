@@ -27,7 +27,9 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.slipstream.app.peer.PeerConnectionState
+import com.slipstream.app.peer.PeerController
 import com.slipstream.app.peer.PeerStatus
+import com.slipstream.app.ui.home.HomeScreen
 import com.slipstream.meridian.MeridianTheme
 import com.slipstream.meridian.component.MeridianStatus
 import com.slipstream.meridian.component.MeridianStatusPill
@@ -83,7 +85,8 @@ internal fun pillLabel(status: PeerStatus): String = when (status.state) {
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SlipstreamNavHost(peerStatus: StateFlow<PeerStatus>) {
+fun SlipstreamNavHost(peerController: PeerController) {
+    val peerStatus = peerController.status
     MeridianTheme {
         val navController = rememberNavController()
         val backStackEntry by navController.currentBackStackEntryAsState()
@@ -132,7 +135,14 @@ fun SlipstreamNavHost(peerStatus: StateFlow<PeerStatus>) {
                 startDestination = SlipstreamDestination.Home.route,
                 modifier = Modifier.padding(contentPadding),
             ) {
-                SlipstreamDestination.entries.forEach { destination ->
+                composable(SlipstreamDestination.Home.route) {
+                    HomeScreen(
+                        peerController = peerController,
+                        navController = navController,
+                        modifier = Modifier.testTag("screen-content"),
+                    )
+                }
+                SlipstreamDestination.entries.filterNot { it == SlipstreamDestination.Home }.forEach { destination ->
                     composable(destination.route) {
                         Text(destination.label, modifier = Modifier.testTag("screen-content"))
                     }

@@ -6,8 +6,10 @@ import kotlin.io.path.createTempDirectory
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -258,8 +260,8 @@ class RealPeerControllerTest {
             // event for it, distinguishing "refused before sending" from "sent, then dropped by
             // SlipstreamSession.clipboard's own cap on arrival" - both would report success/failure
             // differently, but only the former means sendClipboard itself did the refusing.
-            val receivedByPeer = kotlinx.coroutines.withTimeoutOrNull(500) {
-                kotlinx.coroutines.flow.first(rig.remoteClipboardSink.received)
+            val receivedByPeer = withTimeoutOrNull(500) {
+                rig.remoteClipboardSink.received.first()
             }
             assertEquals(
                 "the peer's own clipboardReceived flow must never see this oversized text",

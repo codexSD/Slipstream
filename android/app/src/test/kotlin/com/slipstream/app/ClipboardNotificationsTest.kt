@@ -86,7 +86,7 @@ class ClipboardNotificationsTest {
         assertTrue("clipboard text must still reach ClipboardManager", gotClip)
 
         val gotNotification = pollUntilTrue(timeoutMs = 2_000) {
-            notificationManager().allNotifications.any { it.id == CLIPBOARD_NOTIFICATION_ID }
+            notificationManager().getNotification(CLIPBOARD_NOTIFICATION_ID) != null
         }
         assertTrue("a notification must be posted for the same text", gotNotification)
     }

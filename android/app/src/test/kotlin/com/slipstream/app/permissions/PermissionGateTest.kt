@@ -26,7 +26,7 @@ import org.robolectric.shadows.ShadowPowerManager
 @RunWith(RobolectricTestRunner::class)
 class PermissionGateTest {
 
-    private lateinit var activity: android.app.Activity
+    private lateinit var activity: androidx.activity.ComponentActivity
     private lateinit var gate: PermissionGate
 
     @Before

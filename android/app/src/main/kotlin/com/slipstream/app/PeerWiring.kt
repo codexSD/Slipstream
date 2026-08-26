@@ -41,8 +41,8 @@ import java.net.InetSocketAddress
  *    by binding to the active network's own local address instead (see [SlipstreamPeer]).
  */
 internal class PeerWiring(
-    private val identity: DeviceIdentity,
-    private val peerStore: PairedPeerStore,
+    internal val identity: DeviceIdentity,
+    internal val peerStore: PairedPeerStore,
     private val networkInfo: NetworkInfo,
     private val endpointCache: EndpointCache,
     private val rootDirectory: File,

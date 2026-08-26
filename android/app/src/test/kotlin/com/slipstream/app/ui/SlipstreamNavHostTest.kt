@@ -9,8 +9,11 @@ import androidx.compose.ui.test.performClick
 import com.slipstream.app.peer.PeerConnectionState
 import com.slipstream.app.peer.PeerController
 import com.slipstream.app.peer.PeerStatus
+import com.slipstream.app.peer.SettingsStore
 import com.slipstream.app.peer.TransferProgress
 import com.slipstream.meridian.component.MeridianStatus
+import android.content.Context
+import androidx.test.core.app.ApplicationProvider
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -46,6 +49,7 @@ private class FakePeerController : PeerController {
     override val clipboardReceived: SharedFlow<String> = MutableSharedFlow()
     override fun openPairing(): Flow<com.slipstream.app.peer.PairingProgress> = MutableSharedFlow()
     override suspend fun confirmPairing(accept: Boolean) = Unit
+    override suspend fun unpair() = Unit
 }
 
 /**
@@ -69,16 +73,20 @@ class SlipstreamNavHostTest {
 
     @Test
     fun `Home is shown on launch`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val settingsStore = SettingsStore(context)
         compose.setContent {
-            SlipstreamNavHost(peerController = FakePeerController())
+            SlipstreamNavHost(peerController = FakePeerController(), settingsStore = settingsStore)
         }
         compose.onNodeWithTag("screen-content").assertIsDisplayed()
     }
 
     @Test
     fun `bottom navigation shows all five destinations and switches screens`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val settingsStore = SettingsStore(context)
         compose.setContent {
-            SlipstreamNavHost(peerController = FakePeerController())
+            SlipstreamNavHost(peerController = FakePeerController(), settingsStore = settingsStore)
         }
 
         SlipstreamDestination.entries.forEach { destination ->
@@ -100,10 +108,12 @@ class SlipstreamNavHostTest {
 
     @Test
     fun `the degraded pill names the band, per spec §15's worked example`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val settingsStore = SettingsStore(context)
         val controller = FakePeerController()
         controller.setStatus(PeerStatus(PeerConnectionState.Degraded, band = "2.4 GHz"))
         compose.setContent {
-            SlipstreamNavHost(peerController = controller)
+            SlipstreamNavHost(peerController = controller, settingsStore = settingsStore)
         }
         compose.onNodeWithText("2.4 GHz — slower link").assertIsDisplayed()
     }

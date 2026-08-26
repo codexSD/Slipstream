@@ -33,7 +33,11 @@ class MainActivity : ComponentActivity() {
         maybeRequestBatteryOptimizationExemption()
 
         setContent {
-            SlipstreamNavHost(peerController = (application as SlipstreamApplication).peerController)
+            val app = application as SlipstreamApplication
+            SlipstreamNavHost(
+                peerController = app.peerController,
+                settingsStore = app.settingsStore,
+            )
         }
     }
 

@@ -29,7 +29,9 @@ import androidx.navigation.compose.rememberNavController
 import com.slipstream.app.peer.PeerConnectionState
 import com.slipstream.app.peer.PeerController
 import com.slipstream.app.peer.PeerStatus
+import com.slipstream.app.peer.SettingsStore
 import com.slipstream.app.ui.home.HomeScreen
+import com.slipstream.app.ui.settings.SettingsScreen
 import com.slipstream.meridian.MeridianTheme
 import com.slipstream.meridian.component.MeridianStatus
 import com.slipstream.meridian.component.MeridianStatusPill
@@ -85,7 +87,7 @@ internal fun pillLabel(status: PeerStatus): String = when (status.state) {
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SlipstreamNavHost(peerController: PeerController) {
+fun SlipstreamNavHost(peerController: PeerController, settingsStore: SettingsStore) {
     val peerStatus = peerController.status
     MeridianTheme {
         val navController = rememberNavController()
@@ -142,7 +144,14 @@ fun SlipstreamNavHost(peerController: PeerController) {
                         modifier = Modifier.testTag("screen-content"),
                     )
                 }
-                SlipstreamDestination.entries.filterNot { it == SlipstreamDestination.Home }.forEach { destination ->
+                composable(SlipstreamDestination.Settings.route) {
+                    SettingsScreen(
+                        peerController = peerController,
+                        settingsStore = settingsStore,
+                        modifier = Modifier.testTag("screen-content"),
+                    )
+                }
+                SlipstreamDestination.entries.filterNot { it == SlipstreamDestination.Home || it == SlipstreamDestination.Settings }.forEach { destination ->
                     composable(destination.route) {
                         Text(destination.label, modifier = Modifier.testTag("screen-content"))
                     }

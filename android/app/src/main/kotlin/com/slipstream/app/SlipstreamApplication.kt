@@ -17,6 +17,7 @@ import com.slipstream.core.net.AndroidNetworkInfo
 import com.slipstream.app.peer.ForwardingClipboardSink
 import com.slipstream.app.peer.PeerController
 import com.slipstream.app.peer.RealPeerController
+import com.slipstream.app.peer.SettingsStore
 import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -58,6 +59,11 @@ class SlipstreamApplication : Application() {
             peerStore = wiring.peerStore,
             clipboardSink = clipboardSink,
         )
+    }
+
+    /** User settings: parallel stream count, download folder, theme, battery exemption status. */
+    val settingsStore: SettingsStore by lazy {
+        SettingsStore(this)
     }
 
     override fun onCreate() {

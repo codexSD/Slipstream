@@ -41,6 +41,7 @@ private class FakePeerController : PeerController {
     override suspend fun start() = Unit
     override suspend fun reconnect(): Boolean = false
     override suspend fun list(path: String) = Result.success(com.slipstream.app.peer.ListResult(emptyList(), false))
+    override fun thumbnailUrl(token: String): String? = null
     override fun pull(remotePath: String, destination: File): Flow<TransferProgress> = MutableSharedFlow()
     override fun push(localPath: String, remoteName: String): Flow<TransferProgress> = MutableSharedFlow()
     override suspend fun streamOnPeer(remotePath: String) = Result.success(Unit)
@@ -94,7 +95,10 @@ class SlipstreamNavHostTest {
         }
 
         compose.onNodeWithTag("navitem-browse").performClick()
-        compose.onNodeWithTag("screen-content").assertTextEquals("Browse")
+        // Task 6 replaced Browse's placeholder Text with the real BrowseScreen - switching to it
+        // now renders the browse state view (an empty-folder message, for this fake's empty
+        // listing) rather than the literal word "Browse".
+        compose.onNodeWithTag("browse-state-view").assertIsDisplayed()
     }
 
     @Test

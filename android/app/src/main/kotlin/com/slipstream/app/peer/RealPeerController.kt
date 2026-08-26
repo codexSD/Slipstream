@@ -217,6 +217,7 @@ class RealPeerController(
                     mtimeMs = obj.getValue("mtimeMs").jsonPrimitive.long,
                     isDirectory = obj.getValue("isDirectory").jsonPrimitive.boolean,
                     mime = obj["mime"]?.takeIf { it != JsonNull }?.jsonPrimitive?.contentOrNull,
+                    thumbnailToken = obj["thumbnailToken"]?.takeIf { it != JsonNull }?.jsonPrimitive?.contentOrNull,
                 )
             } ?: emptyList()
             val truncated = payload["truncated"]?.jsonPrimitive?.boolean ?: false
@@ -224,6 +225,11 @@ class RealPeerController(
         } catch (e: Exception) {
             Result.failure(IllegalStateException(LIST_FAILED_MESSAGE))
         }
+    }
+
+    override fun thumbnailUrl(token: String): String? {
+        val endpoint = peerEndpoint ?: return null
+        return "http://${endpoint.address.hostAddress}:${com.slipstream.core.SlipstreamPorts.MEDIA}/thumb/$token"
     }
 
     override fun pull(remotePath: String, destination: File): Flow<TransferProgress> = callbackFlow {

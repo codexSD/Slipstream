@@ -33,6 +33,7 @@ import com.slipstream.app.peer.PeerController
 import com.slipstream.app.peer.PeerStatus
 import com.slipstream.app.peer.SettingsStore
 import com.slipstream.app.SlipstreamApplication
+import com.slipstream.app.ui.browse.BrowseScreen
 import com.slipstream.app.ui.home.HomeScreen
 import com.slipstream.app.ui.settings.SettingsScreen
 import com.slipstream.app.ui.transfers.TransfersScreen
@@ -159,6 +160,12 @@ fun SlipstreamNavHost(peerController: PeerController, settingsStore: SettingsSto
                         modifier = Modifier.testTag("screen-content"),
                     )
                 }
+                composable(SlipstreamDestination.Browse.route) {
+                    BrowseScreen(
+                        peerController = peerController,
+                        modifier = Modifier.testTag("screen-content"),
+                    )
+                }
                 composable(SlipstreamDestination.Transfers.route) {
                     TransfersScreen(
                         peerController = peerController,
@@ -175,6 +182,7 @@ fun SlipstreamNavHost(peerController: PeerController, settingsStore: SettingsSto
                 }
                 SlipstreamDestination.entries.filterNot {
                     it == SlipstreamDestination.Home ||
+                        it == SlipstreamDestination.Browse ||
                         it == SlipstreamDestination.Transfers ||
                         it == SlipstreamDestination.Settings
                 }.forEach { destination ->

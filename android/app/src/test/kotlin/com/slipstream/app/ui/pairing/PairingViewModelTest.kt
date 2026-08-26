@@ -45,6 +45,8 @@ private class FakeController : PeerController {
     override suspend fun list(path: String): Result<ListResult> =
         Result.success(ListResult(emptyList(), truncated = false))
 
+    override fun thumbnailUrl(token: String): String? = null
+
     override fun pull(remotePath: String, destination: File): Flow<TransferProgress> = emptyFlow()
 
     override fun push(localPath: String, remoteName: String): Flow<TransferProgress> = emptyFlow()

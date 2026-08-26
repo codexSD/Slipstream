@@ -43,6 +43,7 @@ private class SpyPeerController(paired: Boolean = false) : PeerController {
     override suspend fun start() = Unit
     override suspend fun reconnect(): Boolean = false
     override suspend fun list(path: String) = Result.success(com.slipstream.app.peer.ListResult(emptyList(), false))
+    override fun thumbnailUrl(token: String): String? = null
     override fun pull(remotePath: String, destination: File): Flow<TransferProgress> = MutableSharedFlow()
     override fun push(localPath: String, remoteName: String): Flow<TransferProgress> = MutableSharedFlow()
     override suspend fun streamOnPeer(remotePath: String) = Result.success(Unit)

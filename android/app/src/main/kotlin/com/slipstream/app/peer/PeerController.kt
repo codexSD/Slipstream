@@ -59,6 +59,12 @@ interface PeerController {
      * exception the caller has to unwrap. */
     suspend fun list(path: String): Result<ListResult>
 
+    /** Builds the full `/thumb/<token>` URL for a [FileEntry.thumbnailToken] returned by
+     * [list], against the peer's already-known control endpoint — never a fresh lookup, and
+     * never any address other than the one this connection already trusts. Null when there is
+     * no current connection to build an endpoint from. */
+    fun thumbnailUrl(token: String): String?
+
     /** Pulls [remotePath] from the peer into [destination], emitting cumulative
      * [TransferProgress] as bytes arrive. Runs the blocking `:core` transfer on `Dispatchers.IO`. */
     fun pull(remotePath: String, destination: File): Flow<TransferProgress>

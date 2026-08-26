@@ -1,6 +1,7 @@
 using System.Net;
 using System.Runtime.Versioning;
 using System.Text;
+using Slipstream.Core.Diagnostics;
 using Slipstream.Core.Files;
 using Slipstream.Core.Identity;
 using Slipstream.Core.Media;
@@ -47,7 +48,14 @@ public sealed class SlipstreamSession(
     public Task<ControlMessage?> HandleAsync(ControlMessage message, CancellationToken cancellationToken) =>
         Task.FromResult(Dispatch(message));
 
-    private ControlMessage? Dispatch(ControlMessage message) => message.Type switch
+    private ControlMessage? Dispatch(ControlMessage message)
+    {
+        var reply = DispatchCore(message);
+        SlipstreamLog.Info("serve", $"{message.Type} -> {reply?.Type ?? "(ignored)"}");
+        return reply;
+    }
+
+    private ControlMessage? DispatchCore(ControlMessage message) => message.Type switch
     {
         "hello" => HandleHello(message),
         "ping" => ControlMessage.Response("pong", message.Id!),
@@ -80,8 +88,11 @@ public sealed class SlipstreamSession(
         // Windows does not — it has drives — so a peer asking for "/" gets the drive list.
         // Without this an Android client, whose browser quite reasonably starts at "/",
         // asks Windows for a path that means nothing there and is told the folder is gone.
+        SlipstreamLog.Info("serve", $"list '{request.Path}'");
+
         if (string.IsNullOrWhiteSpace(request.Path) || request.Path is "/" or "\\")
         {
+            SlipstreamLog.Info("serve", $"list root -> {browser.Roots().Count} drives");
             return ControlMessage.Response("list.ok", message.Id!,
                 new ListResponse("/", browser.Roots(), Truncated: false));
         }
@@ -97,15 +108,18 @@ public sealed class SlipstreamSession(
                     : e with { ThumbnailToken = thumbnails.TokenFor(e.Path)?.ToString("N") })
                 .ToList();
 
+            SlipstreamLog.Info("serve", $"list '{request.Path}' -> {entries.Count} entries");
             return ControlMessage.Response("list.ok", message.Id!,
                 new ListResponse(result.Path, entries, result.Truncated));
         }
-        catch (DirectoryNotFoundException)
+        catch (DirectoryNotFoundException e)
         {
+            SlipstreamLog.Warn("serve", $"list '{request.Path}' not found", e);
             return Error(message, "list.error", "That folder is no longer there.");
         }
-        catch (UnauthorizedAccessException)
+        catch (UnauthorizedAccessException e)
         {
+            SlipstreamLog.Warn("serve", $"list '{request.Path}' denied", e);
             return Error(message, "list.error", "Slipstream cannot read that folder.");
         }
     }

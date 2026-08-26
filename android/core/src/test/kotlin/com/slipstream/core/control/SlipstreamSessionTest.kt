@@ -100,6 +100,32 @@ class SlipstreamSessionTest {
         assertTrue(entries.toString().contains("sub"))
     }
 
+    /**
+     * "/" is the protocol's platform-neutral root, and it is what the Windows browser sends for
+     * its very first request (`BrowseViewModel.JoinSegments` of no segments). Every existing
+     * test asked for "." instead, so nothing covered the one path a real peer actually starts
+     * from.
+     */
+    @Test
+    fun `list of the protocol root returns the shared folder, not an error`() {
+        val root = createTempDirectory().toFile()
+        File(root, "a.txt").writeText("hi")
+        val session = newSession(root = root)
+
+        for (requested in listOf("/", "", ".")) {
+            val reply = session.dispatch(
+                ControlMessage(
+                    type = SessionMessageTypes.LIST,
+                    id = "2",
+                    payload = JsonObject(mapOf("path" to JsonPrimitive(requested))),
+                ),
+            )
+
+            assertEquals("list of '$requested' must succeed", SessionMessageTypes.LIST_OK, reply?.type)
+            assertTrue(requireNotNull(reply?.payload)["entries"].toString().contains("a.txt"))
+        }
+    }
+
     @Test
     fun `stat returns metadata for a single file`() {
         val root = createTempDirectory().toFile()

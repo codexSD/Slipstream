@@ -149,7 +149,16 @@ class SlipstreamSession(
     private fun list(message: ControlMessage): ControlMessage {
         val path = message.payload?.get("path")?.jsonPrimitive?.contentOrNull
         val dir = resolvePath(path)
-        if (dir == null || !dir.isDirectory) {
+        if (dir == null) {
+            com.slipstream.core.SlipstreamLog.i(
+                "serve", "list '$path' refused: resolves outside the shared root ($rootDirectory)",
+            )
+            return errorReply(message)
+        }
+        if (!dir.isDirectory) {
+            com.slipstream.core.SlipstreamLog.i(
+                "serve", "list '$path' refused: $dir is not a directory (exists=${dir.exists()})",
+            )
             return errorReply(message)
         }
         val listing = FileBrowser.list(dir)
@@ -172,6 +181,7 @@ class SlipstreamSession(
                 "truncated" to JsonPrimitive(listing.truncated),
             ),
         )
+        com.slipstream.core.SlipstreamLog.i("serve", "list '$path' -> ${entries.size} entries")
         return ControlMessage(type = SessionMessageTypes.LIST_OK, id = message.id, payload = payload)
     }
 

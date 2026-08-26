@@ -1,5 +1,6 @@
 package com.slipstream.core.control
 
+import com.slipstream.core.SlipstreamLog
 import java.net.Socket
 import java.security.cert.X509Certificate
 
@@ -28,7 +29,15 @@ class ControlConnection(
     private val input = socket.getInputStream()
     private val output = socket.getOutputStream()
 
-    fun send(message: ControlMessage) = JsonLineCodec.writeMessage(output, message)
+    fun send(message: ControlMessage) {
+        SlipstreamLog.i("wire", "-> ${message.type} id=${message.id} ${describe(message)}")
+        JsonLineCodec.writeMessage(output, message)
+    }
+
+    /** Payload keys only, never values: a listing carries the user's file names and a clipboard
+     * message carries whatever they copied, and neither belongs in a log. */
+    private fun describe(message: ControlMessage): String =
+        message.payload?.keys?.joinToString(",", "{", "}") ?: "{}"
 
     /**
      * Returns the next message, or null if the peer closed the connection.
@@ -40,7 +49,13 @@ class ControlConnection(
      */
     fun receive(): ControlMessage? {
         try {
-            return JsonLineCodec.readMessage(input)
+            val message = JsonLineCodec.readMessage(input)
+            if (message == null) {
+                SlipstreamLog.i("wire", "<- (peer closed the connection)")
+            } else {
+                SlipstreamLog.i("wire", "<- ${message.type} id=${message.id} ${describe(message)}")
+            }
+            return message
         } catch (e: LineTooLargeException) {
             close()
             throw e

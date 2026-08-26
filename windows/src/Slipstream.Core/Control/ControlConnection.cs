@@ -1,4 +1,5 @@
 using System.Net;
+using Slipstream.Core.Diagnostics;
 
 namespace Slipstream.Core.Control;
 
@@ -12,11 +13,20 @@ public sealed class ControlConnection(Stream stream, string peerFingerprint, IPE
 
     public IPEndPoint RemoteEndPoint { get; } = remoteEndPoint;
 
-    public Task SendAsync(ControlMessage message, CancellationToken cancellationToken) =>
-        _codec.WriteAsync(message, cancellationToken);
+    public Task SendAsync(ControlMessage message, CancellationToken cancellationToken)
+    {
+        SlipstreamLog.Info("wire", $"-> {message.Type} id={message.Id}");
+        return _codec.WriteAsync(message, cancellationToken);
+    }
 
-    public Task<ControlMessage?> ReceiveAsync(CancellationToken cancellationToken) =>
-        _codec.ReadAsync(cancellationToken);
+    public async Task<ControlMessage?> ReceiveAsync(CancellationToken cancellationToken)
+    {
+        var message = await _codec.ReadAsync(cancellationToken);
+        SlipstreamLog.Info("wire", message is null
+            ? "<- (peer closed the connection)"
+            : $"<- {message.Type} id={message.Id}");
+        return message;
+    }
 
     public async ValueTask DisposeAsync() => await stream.DisposeAsync();
 }

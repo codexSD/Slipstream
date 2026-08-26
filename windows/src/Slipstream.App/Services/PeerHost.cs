@@ -1,5 +1,6 @@
 using System.Net;
 using System.Runtime.Versioning;
+using Slipstream.Core.Diagnostics;
 using Slipstream.Core;
 using Slipstream.Core.Control;
 using Slipstream.Core.Control.Handlers;
@@ -178,14 +179,24 @@ public sealed class PeerHost : IPeerHost, IAsyncDisposable
 
     public async Task<ListResult> ListAsync(string path, CancellationToken ct)
     {
+        SlipstreamLog.Info("browse", $"asking the peer for '{path}'");
         var reply = await SendRequestAsync("list", new ListRequest(path, null), ct);
 
         if (reply.Type != "list.ok")
-            throw new ControlProtocolException(reply.PayloadAs<ErrorResponse>()?.Message ?? "The peer refused to list that folder.");
+        {
+            var why = reply.PayloadAs<ErrorResponse>()?.Message ?? "The peer refused to list that folder.";
+            SlipstreamLog.Info("browse", $"peer refused '{path}' with {reply.Type}: {why}");
+            throw new ControlProtocolException(why);
+        }
 
-        var response = reply.PayloadAs<ListResponse>()
-            ?? throw new ControlProtocolException("The peer sent a malformed listing.");
+        var response = reply.PayloadAs<ListResponse>();
+        if (response is null)
+        {
+            SlipstreamLog.Warn("browse", $"peer's listing for '{path}' did not deserialize");
+            throw new ControlProtocolException("The peer sent a malformed listing.");
+        }
 
+        SlipstreamLog.Info("browse", $"got {response.Entries.Count} entries for '{path}'");
         return new ListResult(response.Path, response.Entries, response.Truncated);
     }
 

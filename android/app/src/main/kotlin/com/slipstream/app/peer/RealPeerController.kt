@@ -1,5 +1,6 @@
 package com.slipstream.app.peer
 
+import com.slipstream.core.SlipstreamLog
 import com.slipstream.core.SlipstreamPeer
 import com.slipstream.core.control.ControlClient
 import com.slipstream.core.control.ControlConnection
@@ -165,6 +166,7 @@ class RealPeerController(
                     delay(IDLE_POLL_MS)
                     continue
                 }
+                SlipstreamLog.i("supervisor", "link is down, attempt ${attempt + 1}")
                 if (connectOnce()) {
                     attempt = 0
                 } else {
@@ -216,17 +218,22 @@ class RealPeerController(
 
     private suspend fun connectOnceLocked(): Boolean {
         _status.value = _status.value.copy(state = PeerConnectionState.Searching)
+        SlipstreamLog.i("connect", "discovering (paired=${_isPaired.value})")
         val discovery = try {
             peer.discover(timeout = 10.seconds)
         } catch (e: Exception) {
+            SlipstreamLog.w("connect", "discovery threw", e)
             null
         }
         if (discovery == null) {
+            SlipstreamLog.i("connect", "no peer found")
             _status.value = _status.value.copy(state = PeerConnectionState.Lost)
             return false
         }
+        SlipstreamLog.i("connect", "found ${discovery.peer.endpoint} via ${discovery.strategyName}")
         return try {
             val conn = ControlClient.connect(discovery.peer.endpoint, identity, peerStore, networkBinder)
+            SlipstreamLog.i("connect", "TLS up to ${discovery.peer.endpoint}")
             val peerName = helloExchange(conn)
             connection = conn
             peerEndpoint = discovery.peer.endpoint
@@ -236,8 +243,10 @@ class RealPeerController(
                 strategy = discovery.strategyName,
             )
             startHeartbeat()
+            SlipstreamLog.i("connect", "connected to ${peerName ?: "(unnamed)"}")
             true
         } catch (e: Exception) {
+            SlipstreamLog.w("connect", "connect failed", e)
             _status.value = _status.value.copy(state = PeerConnectionState.Lost)
             false
         }
@@ -249,6 +258,7 @@ class RealPeerController(
         val reply = conn.receive()
         reply?.payload?.get("name")?.jsonPrimitive?.contentOrNull
     } catch (e: Exception) {
+        SlipstreamLog.w("connect", "hello exchange failed", e)
         null
     }
 
@@ -300,10 +310,17 @@ class RealPeerController(
             _status.value.state != PeerConnectionState.Degraded)
 
     override suspend fun list(path: String): Result<ListResult> = withContext(dispatcher) {
-        if (offline()) return@withContext Result.failure(IllegalStateException(NOT_CONNECTED_MESSAGE))
+        SlipstreamLog.i("list", "requesting '$path'")
+        if (offline()) {
+            SlipstreamLog.i("list", "refused: no connection (state=${_status.value.state})")
+            return@withContext Result.failure(IllegalStateException(NOT_CONNECTED_MESSAGE))
+        }
         try {
             val reply = sendRequest(SessionMessageTypes.LIST, JsonObject(mapOf("path" to JsonPrimitive(path))))
             if (reply.type != SessionMessageTypes.LIST_OK) {
+                // The peer's own words for why, which the generic message would otherwise hide.
+                val why = reply.payload?.get("message")?.jsonPrimitive?.contentOrNull
+                SlipstreamLog.i("list", "peer refused with ${reply.type}: ${why ?: "(no message)"}")
                 return@withContext Result.failure(IllegalStateException(LIST_FAILED_MESSAGE))
             }
             val payload = reply.payload ?: return@withContext Result.failure(IllegalStateException(LIST_FAILED_MESSAGE))
@@ -321,6 +338,9 @@ class RealPeerController(
             val truncated = payload["truncated"]?.jsonPrimitive?.boolean ?: false
             Result.success(ListResult(entries, truncated))
         } catch (e: Exception) {
+            // This exception was swallowed entirely for the whole life of the project, which is
+            // why a parse failure and a missing folder were indistinguishable on a real device.
+            SlipstreamLog.w("list", "'$path' failed", e)
             // The link can drop mid-request — re-check rather than assuming the path was bad.
             Result.failure(IllegalStateException(if (offline()) NOT_CONNECTED_MESSAGE else LIST_FAILED_MESSAGE))
         }
@@ -507,6 +527,7 @@ class RealPeerController(
                         // point — so without connecting here the device stays Lost forever
                         // while the peer, which initiated and holds its own link, shows
                         // connected. Nothing else in the app watches for this.
+                        SlipstreamLog.i("pairing", "finished, paired=${paired != null}")
                         if (paired != null && connection == null) connectOnce()
                     } catch (e: Exception) {
                         // A failed pairing is a reportable outcome, not a crash. Closing the

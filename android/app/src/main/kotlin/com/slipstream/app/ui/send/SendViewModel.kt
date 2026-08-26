@@ -42,9 +42,15 @@ data class SendState(
  * deviation noted in its class doc (it previously had no production caller).
  *
  * A folder's empty-directory entries ([FolderExpander.Entry.isDirectory] `== true`) are dropped
- * silently: [PeerController.push] sends file bytes and has no message for "create this empty
- * directory", so an empty subfolder inside a sent folder is a known gap, not something this task
- * invents new `:core` protocol to solve.
+ * here — an `:app`-side scope call made for this task, not something the plan or spec asked
+ * for. Spec §7 (quoted in [FolderExpander]'s own class doc) says empty directories should be
+ * preserved on the receiver, but `:core`'s wire protocol has no message for "create this empty
+ * directory" — [PeerController.push] only ever sends file bytes to a `remoteName`. Recreating an
+ * empty directory would need a new `:core` protocol addition (in the spirit of what Tasks
+ * 1.5/2.5 added for `pushOffer`/`ThumbnailProvider`), which is out of proportion to add in this
+ * task for a case as narrow as "an empty folder nested inside a shared folder". Disclosed here
+ * as a known, deliberately-unsolved `:core` protocol gap for a future task (e.g. Task 13's
+ * whole-branch review) to pick up if it matters.
  */
 class SendViewModel(
     private val controller: PeerController,

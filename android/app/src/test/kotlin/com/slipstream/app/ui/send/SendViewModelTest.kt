@@ -101,7 +101,7 @@ class SendViewModelTest {
     fun `a share intent with multiple items queues all of them`() = runTest {
         val vm = SendViewModel(FakeController())
         vm.onShareIntent(listOf(uriFor("one.jpg"), uriFor("two.jpg")))
-        assertEquals(2, vm.state.value.items.size)
+        assertEquals(listOf("one.jpg", "two.jpg"), vm.state.value.items.map { it.relativePath })
     }
 
     @Test

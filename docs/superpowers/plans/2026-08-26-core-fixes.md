@@ -228,7 +228,30 @@ is still queued. The file's own comments describe a previously-fixed "forcibly c
 same error string, which suggests that earlier fix reduced the frequency rather than removing the
 cause.
 
-**Change.** Close gracefully instead of aborting:
+> **Correction, after implementation. The prescribed change below is WRONG — do not follow it.**
+>
+> `Shutdown(SocketShutdown.Send)` reproduces the bug at the original rate. It was measured with a
+> standalone out-of-process harness, 40 transfers per strategy:
+>
+> | server teardown after the last write | failures / 40 |
+> |---|---|
+> | `Shutdown(Send)` immediately | 7, 5, 2 |
+> | `Shutdown(Send)` + drain — *the recipe below* | 8–11 |
+> | drain to EOF first, then `Shutdown` | 8 |
+> | **drain only, never touch the send side** | **0, 0, 0** |
+>
+> The trigger is *any* server-initiated close while the tail is still in flight; `Shutdown(Send)`
+> is not meaningfully different from the old `DisconnectAsync`. There is also a second trap:
+> `Shutdown` flips `TcpClient.Connected` to false, so `GetStream()` inside the drain throws
+> `InvalidOperationException` and the drain silently never runs — read via `Socket.ReceiveAsync`.
+>
+> **What actually shipped (commit `f2788fb`): the server never initiates the close.** Every response
+> carries `Content-Length` and `Connection: close`, so the client knows where the body ends without
+> a FIN and hangs up first; the server reads until that close under a 3 s bound, then disposes. The
+> drain also empties the receive buffer, which independently stops a close becoming an RST.
+> Verified: ten consecutive green runs, and Core suite duration dropped from ~19 s to ~7 s.
+
+**Change (superseded — see the correction above).** Close gracefully instead of aborting:
 
 1. `await stream.FlushAsync(...)` (already done in `ServeFileAsync`).
 2. `client.Client.Shutdown(SocketShutdown.Send)` — sends FIN, letting queued data drain.
@@ -286,6 +309,45 @@ tests that never ran. Fix the visibility first — the three failures are the sm
 
 **Verification.** `dotnet test windows/Slipstream.sln` reports 2 test files and zero failures, ten
 times consecutively.
+
+---
+
+---
+
+# Round 3 — open
+
+## Fix 7 — `PeerHostTests` fail only inside the suite (cross-test interference)
+
+**File:** `windows/tests/Slipstream.App.Tests/PeerHostTests.cs` (and whatever it shares state with)
+
+**Status after round 2:** `dotnet test windows/Slipstream.sln` is now **306/306 Core + 119/120 App**,
+stable across five consecutive runs. The single remaining failure is deterministic, not flaky.
+
+**Symptom.** `Reports_Lost_then_recovers_on_reconnect` fails 5 runs out of 5 with
+`TimeoutException: Condition was not met in time` — `host.State` never reaches `Lost` within 10 s
+of `BreakControlConnectionAsync()`. It **passes in about 2 s when run in isolation.**
+`A_network_change_tears_down_rediscovers_and_resumes` in the same file failed once under load.
+
+**Ruled out already — do not re-derive.** It is not the `MediaServer` teardown bug (Fix 5): no HTTP
+and no `MediaServer` is involved, and it survived that fix unchanged. It is not a timing flake —
+5/5 in-suite versus passing in isolation is interference, not variance.
+
+**Where to look.** Something shared across `Slipstream.App.Tests` is keeping the control channel's
+liveness detection from firing: a static or leaked `SlipstreamPeer`/`PeerHost` still holding the
+port, an `xUnit` collection running these in parallel with tests that bind the same fixed ports, or
+a `NetworkChange` handler surviving a prior test. Note that this project has already shipped one
+static-event-handler leak (`SlipstreamPeer`, closed in Plan 2b) — the same shape is worth checking
+first.
+
+**Bar.** Ten consecutive `dotnet test windows/Slipstream.sln` runs with **zero** failures across
+both projects. Do not fix it by putting the test in its own collection unless that is genuinely the
+right answer *and* the underlying shared state is documented — isolating a test to hide
+interference leaves the interference in the product.
+
+**Also unowned:** `SubnetSweepStrategyTests.Runs_probes_concurrently_rather_than_serially` failed
+once under load in round 2. It is a wall-clock assertion (serial would be 12.7 s; it allows 2 s),
+so it is inherently load-sensitive. Decide whether to widen the bound or measure concurrency
+directly rather than by elapsed time.
 
 ---
 

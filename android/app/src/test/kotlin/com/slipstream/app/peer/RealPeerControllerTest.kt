@@ -233,4 +233,59 @@ class RealPeerControllerTest {
             rig.remote.close()
         }
     }
+
+    /**
+     * Task 12: `SlipstreamSession.clipboard` (`:core`) silently drops anything over
+     * [com.slipstream.core.control.CLIPBOARD_MAX_BYTES] before it ever reaches the receiving
+     * app - so a naive sender would see [sendClipboard] report success while the text vanished
+     * on arrival. [RealPeerController.sendClipboard] must instead refuse it up front, with the
+     * spec §15 message, before anything is even sent over the wire.
+     */
+    @Test
+    fun `sendClipboard refuses text over the 64KB cap before sending it`() = runBlocking {
+        val rig = TwoPeers.start(createTempDirectory().toFile())
+        val controller = controller(rig)
+        try {
+            withTimeout(20_000) { controller.start() }
+
+            val oversized = "x".repeat(com.slipstream.core.control.CLIPBOARD_MAX_BYTES + 1)
+            val result = controller.sendClipboard(oversized)
+
+            assertTrue("must be refused, not silently sent", result.isFailure)
+            assertEquals(CLIPBOARD_TOO_LARGE_MESSAGE, result.exceptionOrNull()?.message)
+
+            // And confirm it never reached the peer: the peer never received a clipboardReceived
+            // event for it, distinguishing "refused before sending" from "sent, then dropped by
+            // SlipstreamSession.clipboard's own cap on arrival" - both would report success/failure
+            // differently, but only the former means sendClipboard itself did the refusing.
+            val receivedByPeer = kotlinx.coroutines.withTimeoutOrNull(500) {
+                kotlinx.coroutines.flow.first(rig.remoteClipboardSink.received)
+            }
+            assertEquals(
+                "the peer's own clipboardReceived flow must never see this oversized text",
+                null,
+                receivedByPeer,
+            )
+        } finally {
+            rig.local.close()
+            rig.remote.close()
+        }
+    }
+
+    @Test
+    fun `sendClipboard accepts text right at the 64KB cap`() = runBlocking {
+        val rig = TwoPeers.start(createTempDirectory().toFile())
+        val controller = controller(rig)
+        try {
+            withTimeout(20_000) { controller.start() }
+
+            val atCap = "x".repeat(com.slipstream.core.control.CLIPBOARD_MAX_BYTES)
+            val result = controller.sendClipboard(atCap)
+
+            assertTrue("exactly at the cap must not be refused: ${result.exceptionOrNull()}", result.isSuccess)
+        } finally {
+            rig.local.close()
+            rig.remote.close()
+        }
+    }
 }

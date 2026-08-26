@@ -45,8 +45,10 @@ class SlipstreamApplication : Application() {
     /** The forwarding half of the clipboard bridge, shared between [SlipstreamPeer] (which
      * writes incoming peer clipboard text into it) and [peerController] (which exposes that
      * same stream as [PeerController.clipboardReceived]). [onCreate] also collects it to mirror
-     * incoming text into the system clipboard, preserving the previous direct-write behaviour. */
-    private val clipboardSink = ForwardingClipboardSink()
+     * incoming text into the system clipboard, preserving the previous direct-write behaviour,
+     * and (Task 12) to post a notification for it. Internal (rather than private), same as
+     * [playSink], so a test can emit into it directly without a full end-to-end peer. */
+    internal val clipboardSink = ForwardingClipboardSink()
 
     /** The forwarding half of the push-to-play bridge (Task 11), same role as [clipboardSink]
      * but for inbound `play` messages — see [ForwardingPlaySink]'s doc. [onCreate] collects it
@@ -94,6 +96,7 @@ class SlipstreamApplication : Application() {
         appScope.launch {
             clipboardSink.received.collect { text ->
                 clipboard.setPrimaryClip(ClipData.newPlainText("Slipstream", text))
+                postClipboardNotification(this@SlipstreamApplication, text)
             }
         }
         appScope.launch {

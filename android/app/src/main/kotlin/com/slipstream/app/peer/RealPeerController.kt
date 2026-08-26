@@ -3,6 +3,7 @@ package com.slipstream.app.peer
 import com.slipstream.core.SlipstreamPeer
 import com.slipstream.core.control.ControlClient
 import com.slipstream.core.control.ControlConnection
+import com.slipstream.core.control.CLIPBOARD_MAX_BYTES
 import com.slipstream.core.control.ControlMessage
 import com.slipstream.core.control.SessionMessageTypes
 import com.slipstream.core.files.FileEntry
@@ -45,6 +46,11 @@ import kotlinx.serialization.json.long
 
 /** The direct, no-apology (spec §15) message surfaced for a failed [PeerController.list]. */
 private const val LIST_FAILED_MESSAGE = "That folder is no longer there."
+
+/** Spec §15 voice for [RealPeerController.sendClipboard] refusing text over [CLIPBOARD_MAX_BYTES]
+ * before it is ever sent - the receiving peer's own cap (design.md §6/§10) would otherwise drop
+ * it silently on arrival, which is a worse experience than refusing it up front. */
+internal const val CLIPBOARD_TOO_LARGE_MESSAGE = "That's too much text to send - copy something under 64 KB."
 
 private const val HEARTBEAT_INTERVAL_MS = 750L
 private val RECONNECT_BACKOFFS_MS = longArrayOf(1_000, 2_000, 4_000, 8_000, 15_000)
@@ -351,6 +357,15 @@ class RealPeerController(
     }
 
     override suspend fun sendClipboard(text: String): Result<Unit> = withContext(dispatcher) {
+        // §6/§10: the peer's own SlipstreamSession.clipboard handler silently drops anything
+        // over CLIPBOARD_MAX_BYTES before it ever reaches the receiving app - refusing here,
+        // before the send even happens, gives the sender a clear reason (spec §15 voice) instead
+        // of a payload that quietly vanishes on arrival.
+        if (text.toByteArray(Charsets.UTF_8).size > CLIPBOARD_MAX_BYTES) {
+            return@withContext Result.failure(
+                IllegalArgumentException(CLIPBOARD_TOO_LARGE_MESSAGE),
+            )
+        }
         try {
             mutex.withLock {
                 val conn = connection ?: throw IllegalStateException("Not connected")

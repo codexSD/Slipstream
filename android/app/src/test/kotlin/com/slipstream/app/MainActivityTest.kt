@@ -1,30 +1,39 @@
 package com.slipstream.app
 
+import android.app.AlertDialog
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
+import org.robolectric.shadows.ShadowAlertDialog
 
 /**
- * On API 33+ `POST_NOTIFICATIONS` is a runtime permission. Declaring it in the manifest alone -
- * which is all the app did - leaves the foreground service's ongoing notification silently
- * suppressed, so the user has no indication the service is running at all.
+ * Task 12: [PermissionGate] shows a rationale dialog before the real `POST_NOTIFICATIONS`
+ * runtime prompt fires - unlike Task 1's original direct-request behaviour, tapping "Continue"
+ * on that dialog is now required before [android.app.Activity.requestPermissions] is ever called.
+ * The dialog interaction itself is exercised more thoroughly in `PermissionGateTest`; these
+ * confirm [MainActivity.onCreate] actually wires [MainActivity.permissionGate] in.
  */
 @RunWith(RobolectricTestRunner::class)
 class MainActivityTest {
 
     @Test
     @Config(sdk = [34])
-    fun `notification permission is requested at runtime on API 33 and up`() {
+    fun `notification permission is requested at runtime on API 33 and up, after the rationale is accepted`() {
         val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
-        val requested = shadowOf(controller.get()).lastRequestedPermission
 
+        val dialog = ShadowAlertDialog.getLatestAlertDialog()
+        assertTrue("a rationale dialog must be shown before the OS prompt", dialog != null)
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).performClick()
+
+        val requested = shadowOf(controller.get()).lastRequestedPermission
         assertEquals(
-            listOf(MainActivity.POST_NOTIFICATIONS),
+            listOf(com.slipstream.app.permissions.PermissionGate.POST_NOTIFICATIONS),
             requested?.requestedPermissions?.toList(),
         )
         controller.destroy()

@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <!-- LAN discovery, control, bulk and media traffic. -->
     <uses-permission android:name="android.permission.INTERNET" />
@@ -22,6 +23,14 @@
     <!-- Battery-optimisation exemption request (design.md §14): the app still works if the
          user declines, just with slower reconnection while the peer service is deprioritized. -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
+    <!-- Full filesystem browsing (design.md §2): a normal storage-permission dialog only grants
+         scoped/media access, not the arbitrary-path browsing Slipstream's file browser needs to
+         offer a paired computer. Requested via a Settings intent, not requestPermissions - see
+         PermissionGate. The app still works with it denied, just limited to what scoped storage
+         already exposes. -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
+        tools:ignore="ScopedStorage" />
 
     <application
         android:name=".SlipstreamApplication"

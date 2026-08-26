@@ -30,6 +30,7 @@ import com.slipstream.app.peer.PeerConnectionState
 import com.slipstream.app.peer.PeerController
 import com.slipstream.app.peer.PeerStatus
 import com.slipstream.app.ui.home.HomeScreen
+import com.slipstream.app.ui.transfers.TransfersScreen
 import com.slipstream.meridian.MeridianTheme
 import com.slipstream.meridian.component.MeridianStatus
 import com.slipstream.meridian.component.MeridianStatusPill
@@ -142,7 +143,15 @@ fun SlipstreamNavHost(peerController: PeerController) {
                         modifier = Modifier.testTag("screen-content"),
                     )
                 }
-                SlipstreamDestination.entries.filterNot { it == SlipstreamDestination.Home }.forEach { destination ->
+                composable(SlipstreamDestination.Transfers.route) {
+                    TransfersScreen(
+                        peerController = peerController,
+                        modifier = Modifier.testTag("screen-content"),
+                    )
+                }
+                SlipstreamDestination.entries.filterNot {
+                    it == SlipstreamDestination.Home || it == SlipstreamDestination.Transfers
+                }.forEach { destination ->
                     composable(destination.route) {
                         Text(destination.label, modifier = Modifier.testTag("screen-content"))
                     }

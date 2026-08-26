@@ -19,11 +19,19 @@ public sealed class MediaServer : IAsyncDisposable
     // WriteAsync calls sized to this buffer, and each call leaves that much data
     // in flight (handed to the OS, not yet acknowledged by the peer) at once. A very
     // large single write racing the "Connection: close" teardown right behind it
-    // (see HandleAsync) gives the OS far more unacknowledged data to lose if the
-    // close happens before it's all delivered - which is what actually produces the
-    // client-visible "existing connection was forcibly closed" failure for larger
-    // files. Chunking keeps the in-flight window bounded regardless of file size.
+    // (see HandleAsync) gives the OS far more unacknowledged data to lose if that
+    // teardown aborts the socket rather than closing it gracefully. The teardown
+    // itself is the real fix for the "existing connection was forcibly closed"
+    // truncation; chunking is defence in depth, keeping the in-flight window
+    // bounded regardless of file size.
     private const int StreamBufferBytes = 64 * 1024;
+
+    // Teardown drain (see HandleAsync's finally). Small: nothing useful is
+    // expected here, only the client's own close. Bounded so a client that never
+    // hangs up cannot pin a handler open - DisposeAsync's drain window is longer
+    // than this, so a handler waiting here still finishes ahead of it.
+    private const int DrainBufferBytes = 1024;
+    private static readonly TimeSpan DrainTimeout = TimeSpan.FromSeconds(3);
 
     private static readonly Dictionary<string, string> ContentTypes = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -143,23 +151,80 @@ public sealed class MediaServer : IAsyncDisposable
         }
         finally
         {
-            // Close gracefully-but-asynchronously: DisconnectAsync lets the OS
-            // finish delivering whatever was already handed to the send buffer
-            // instead of yanking the socket out from under it (the original
-            // "forcibly closed" bug), without ever blocking a thread the way a
-            // TcpClient.Dispose() + LingerState close would.
+            // Let the *client* close first, then follow. This used to be
+            // DisconnectAsync(reuseSocket: false) immediately followed by
+            // Dispose(), on the theory that DisconnectAsync would let the OS
+            // finish delivering the send buffer. It does not. Writing to a socket
+            // only queues bytes; a teardown the server initiates while the tail of
+            // the response is still in flight loses that tail, and the peer sees
+            // the body stop partway through and then, once the stack gives up
+            // retransmitting, "An existing connection was forcibly closed by the
+            // remote host". Same error string as the bug the comment above
+            // describes, because it was never actually a different bug - that fix
+            // narrowed the window instead of closing it.
+            //
+            // Measured on a 100 KB body over loopback: ~20% of responses lost
+            // their tail (consistently the last few hundred bytes) and failed
+            // ~19 s later. Shutdown(SocketShutdown.Send) here is *not* a fix -
+            // it is the same server-initiated close and reproduces at the same
+            // rate. Not touching the send side at all reproduces zero times.
+            //
+            // So: send nothing, read until the client closes its half, then
+            // dispose. Every response carries Content-Length, so the client knows
+            // where the body ends without needing a FIN from us and hangs up on
+            // its own; by the time its FIN arrives the body is provably delivered
+            // and Dispose() has nothing left to discard. Draining also empties the
+            // receive buffer, which matters independently - unread bytes at close
+            // time are themselves enough to turn a close into an RST.
             try
             {
-                await client.Client.DisconnectAsync(reuseSocket: false, CancellationToken.None);
+                await DrainUntilPeerClosesAsync(client.Client);
             }
             catch (Exception)
             {
                 // Peer already gone, or the socket was never fully connected
-                // (e.g. LanGuard rejected it above). A plain Dispose is enough
-                // to release the handle in that case.
+                // (e.g. LanGuard rejected it above), or a client that never hangs
+                // up hit the drain timeout. None of those should surface an error
+                // on a response that was served correctly.
             }
 
             client.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// Reads and discards until the client closes its half of the connection. That
+    /// close is the server's evidence that the response was fully delivered, and it
+    /// leaves the receive buffer empty so the following Dispose() is a clean close
+    /// rather than an RST.
+    ///
+    /// Bounded, because a client that never hangs up must not pin a handler open.
+    /// The window is sized so that even a stalled tail is through before it expires
+    /// (measured: a server-initiated close was still lossy at 500 ms after the last
+    /// write, and never lossy at 3 s), while staying under DisposeAsync's own drain
+    /// window so a waiting handler still finishes ahead of a server shutdown.
+    ///
+    /// Deliberately not tied to the server's cancellation token: during shutdown
+    /// that token is already cancelled, and skipping the drain is exactly the
+    /// truncation this exists to prevent.
+    /// </summary>
+    private static async Task DrainUntilPeerClosesAsync(Socket socket)
+    {
+        using var timeout = new CancellationTokenSource(DrainTimeout);
+
+        var buffer = ArrayPool<byte>.Shared.Rent(DrainBufferBytes);
+        try
+        {
+            while (await socket.ReceiveAsync(
+                       buffer.AsMemory(0, DrainBufferBytes), SocketFlags.None, timeout.Token) > 0)
+            {
+                // Anything still arriving is a pipelined request we will not
+                // serve (every response says "Connection: close"). Discard it.
+            }
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
         }
     }
 

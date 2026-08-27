@@ -146,6 +146,14 @@ class SlipstreamSession(
         return target
     }
 
+    /** A child path relative to the shared root, normalising the several spellings of "root"
+     * ("/", "", ".", null) that peers legitimately send so they never produce a leading slash
+     * that [resolvePath] would then have to strip. */
+    private fun childPathFor(parent: String?, name: String): String {
+        val base = parent?.trim()?.trim('/')?.removePrefix(".")?.trim('/').orEmpty()
+        return if (base.isEmpty()) name else "$base/$name"
+    }
+
     private fun list(message: ControlMessage): ControlMessage {
         val path = message.payload?.get("path")?.jsonPrimitive?.contentOrNull
         val dir = resolvePath(path)
@@ -172,6 +180,11 @@ class SlipstreamSession(
                     "isDirectory" to JsonPrimitive(e.isDirectory),
                     "mime" to (e.mime?.let { JsonPrimitive(it) } ?: JsonNull),
                     "thumbnailToken" to (thumbnailToken?.let { JsonPrimitive(it) } ?: JsonNull),
+                    // How to ask for this entry next, in this device's own terms. Relative to
+                    // the shared root, exactly as resolvePath expects it back. A peer that
+                    // builds child paths itself cannot get this right across platforms — see
+                    // FileEntry.path.
+                    "path" to JsonPrimitive(childPathFor(path, e.name)),
                 ),
             )
         }

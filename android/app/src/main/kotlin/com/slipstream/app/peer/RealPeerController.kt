@@ -351,6 +351,7 @@ class RealPeerController(
                     isDirectory = obj.getValue("isDirectory").jsonPrimitive.boolean,
                     mime = obj["mime"]?.takeIf { it != JsonNull }?.jsonPrimitive?.contentOrNull,
                     thumbnailToken = obj["thumbnailToken"]?.takeIf { it != JsonNull }?.jsonPrimitive?.contentOrNull,
+                    path = obj["path"]?.takeIf { it != JsonNull }?.jsonPrimitive?.contentOrNull,
                 )
             } ?: emptyList()
             val truncated = payload["truncated"]?.jsonPrimitive?.boolean ?: false
@@ -376,18 +377,37 @@ class RealPeerController(
             return@callbackFlow
         }
         val cumulative = AtomicLong(0)
+        val streams = parallelStreamCount()
         val job = launch(dispatcher) {
+            val startedAt = System.nanoTime()
             try {
-                val part = peer.pullFile(endpoint, remotePath, destination, streams = parallelStreamCount()) { bytes ->
+                SlipstreamLog.i("transfer", "pull '$remotePath' starting ($streams streams)")
+                val part = peer.pullFile(endpoint, remotePath, destination, streams = streams) { bytes ->
                     trySend(TransferProgress(cumulative.addAndGet(bytes), 0L))
                 }
+                SlipstreamLog.i("transfer", "pull '$remotePath' " + rate(part.fileSize, startedAt))
                 trySend(TransferProgress(part.fileSize, part.fileSize))
                 close()
             } catch (e: Exception) {
+                SlipstreamLog.w("transfer", "pull '$remotePath' failed after ${cumulative.get()} bytes", e)
                 close(e)
             }
         }
         awaitClose { job.cancel() }
+    }
+
+    /**
+     * Spec §16 exists to set expectations about speed (40–100 MB/s over a router, 3–5 MB/s over
+     * a phone hotspot, where one radio does AP and client duty at once) and there was no way to
+     * check any of it against a real device: nothing measured a completed transfer. Reported on
+     * every transfer, not behind a benchmark mode, because the number that matters is the one
+     * from the user's own network with their own files.
+     */
+    private fun rate(bytes: Long, startedAtNanos: Long): String {
+        val seconds = (System.nanoTime() - startedAtNanos) / 1_000_000_000.0
+        val megabytes = bytes / 1_048_576.0
+        val rate = if (seconds > 0) megabytes / seconds else 0.0
+        return "done: %.1f MB in %.2fs = %.1f MB/s".format(megabytes, seconds, rate)
     }
 
     override fun push(localPath: String, remoteName: String): Flow<TransferProgress> = callbackFlow {
@@ -400,17 +420,22 @@ class RealPeerController(
         val cumulative = AtomicLong(0)
         val total = localFile.length()
         val job = launch(dispatcher) {
+            val startedAt = System.nanoTime()
             try {
+                SlipstreamLog.i("transfer", "push '$remoteName' starting (${total / 1_048_576} MB)")
                 val ok = peer.pushFile(endpoint, localFile, remoteName) { bytes ->
                     trySend(TransferProgress(cumulative.addAndGet(bytes), total))
                 }
                 if (!ok) {
+                    SlipstreamLog.w("transfer", "push '$remoteName' was refused by the peer")
                     close(IllegalStateException("The peer never accepted the file."))
                 } else {
+                    SlipstreamLog.i("transfer", "push '$remoteName' " + rate(total, startedAt))
                     trySend(TransferProgress(total, total))
                     close()
                 }
             } catch (e: Exception) {
+                SlipstreamLog.w("transfer", "push '$remoteName' failed after ${cumulative.get()} bytes", e)
                 close(e)
             }
         }

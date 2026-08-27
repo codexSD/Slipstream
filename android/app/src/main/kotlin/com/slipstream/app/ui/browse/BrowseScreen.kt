@@ -202,6 +202,12 @@ fun BrowseScreen(
  * [BrowseViewModel.playHere] expect — the same join [BrowseViewModel.open] already does for
  * directories. */
 private fun currentFilePath(currentPath: String, entry: BrowseEntry): String {
+    // The peer's own name for the file, exactly as with directories (see BrowseViewModel.open):
+    // joining with "/" cannot spell a path on a platform that does not use "/", so downloading
+    // or streaming anything on a PC drive asked for a path Windows could not resolve. Falls
+    // back to joining only for a peer that sends no path.
+    entry.path?.let { return it }
+
     val base = currentPath.trimEnd('/')
     return "$base/${entry.name}"
 }

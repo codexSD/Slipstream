@@ -14,7 +14,19 @@ public sealed record ListRequest(string Path, string? Sort);
 public sealed record ListResponse(string Path, IReadOnlyList<FileEntry> Entries, bool Truncated);
 public sealed record StatRequest(string Path);
 public sealed record PullRequest(string Path);
-public sealed record PullResponse(string TransferId, string Token, long Size, int ChunkSize, int Streams, string Name);
+/// <summary>
+/// The answer to `pull.request`. <see cref="Host"/> and <see cref="Port"/> say where this
+/// device's bulk server is actually listening.
+///
+/// They were absent, because the only client that ever read this response was the Windows one,
+/// which assumes <see cref="SlipstreamPorts.Bulk"/> and already knows the address it connected
+/// to. The Android peer reads them as required fields and threw "Key host is missing in the
+/// map" on every pull.ok, so no transfer between the two implementations could start. Telling
+/// the peer where to connect is also simply more correct than having it assume.
+/// </summary>
+public sealed record PullResponse(
+    string TransferId, string Token, long Size, int ChunkSize, int Streams, string Name,
+    string Host, int Port);
 public sealed record ErrorResponse(string Message);
 
 /// <summary>
@@ -149,8 +161,12 @@ public sealed class SlipstreamSession(
         var token = vault.IssueBulk(transferId, info.FullName, info.Length, streams);
 
         return ControlMessage.Response("pull.ok", message.Id!, new PullResponse(
-            transferId.ToString("N"), token.Value.ToString("N"),
-            info.Length, ChunkSize, streams, info.Name));
+            // Canonical dashed form, not "N": Guid.Parse accepts both, but Java's
+            // UUID.fromString accepts only this one, and the Android peer threw
+            // "Invalid UUID string" on every pull.ok it ever received.
+            transferId.ToString("D"), token.Value.ToString("D"),
+            info.Length, ChunkSize, streams, info.Name,
+            advertisedAddress.ToString(), SlipstreamPorts.Bulk));
     }
 
     private ControlMessage HandleStream(ControlMessage message)

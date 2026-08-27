@@ -49,6 +49,9 @@ data class BrowseEntry(
     val mtimeMs: Long,
     val mime: String?,
     val thumbnailUrl: String?,
+    /** The peer's own name for this entry — see
+     * [com.slipstream.core.files.FileEntry.path]. Null only from a peer that doesn't send one. */
+    val path: String? = null,
 )
 
 /** One link in the path trail above the listing. [path] is what gets sent back to
@@ -91,7 +94,17 @@ class BrowseViewModel(
     /** Lists [path] on the peer and replaces the current screen state with the result — used
      * both for the initial load and for every breadcrumb/directory navigation, since each is
      * just "list a (possibly different) path". */
-    suspend fun load(path: String) {
+    suspend fun load(path: String) = load(path, trail = null)
+
+    /**
+     * [trail] is the breadcrumb trail to show, or null to start a fresh one at the root.
+     *
+     * The trail is carried through navigation rather than re-derived by splitting the current
+     * path on "/". Splitting only ever worked for one side's paths: "D:\Movies" is a single
+     * segment to a slash-splitter, so the crumbs for anything on a PC were wrong, and tapping
+     * one sent a path the PC could not resolve.
+     */
+    private suspend fun load(path: String, trail: List<Breadcrumb>?) {
         _state.value = _state.value.copy(uiState = MeridianUiState.Loading)
         val result = controller.list(path)
         result.fold(
@@ -104,6 +117,7 @@ class BrowseViewModel(
                         mtimeMs = e.mtimeMs,
                         mime = e.mime,
                         thumbnailUrl = e.thumbnailToken?.let { controller.thumbnailUrl(it) },
+                        path = e.path,
                     )
                 }.sortedWith(compareByDescending<BrowseEntry> { it.isDirectory }.thenBy { it.name.lowercase() })
 
@@ -120,7 +134,7 @@ class BrowseViewModel(
                         MeridianUiState.Content
                     },
                     currentPath = path,
-                    breadcrumbs = breadcrumbsFor(path),
+                    breadcrumbs = trail ?: listOf(Breadcrumb(label = "Root", path = path)),
                     allEntries = entries,
                     entries = applyFilter(entries, _state.value.filter),
                     truncationNotice = truncationNotice,
@@ -137,16 +151,27 @@ class BrowseViewModel(
         )
     }
 
-    /** Descends into a directory entry, appending it to [BrowseState.currentPath]. */
+    /**
+     * Descends into a directory entry.
+     *
+     * Uses the path the peer gave for this entry, and only falls back to joining names when it
+     * did not send one. Joining was the sole mechanism before, and it cannot work across
+     * platforms: descending into a Windows drive from the protocol root produced "/D:\", which
+     * Windows rightly reported as a folder that does not exist — so the PC's own drives were
+     * visible from the phone but impossible to open.
+     */
     suspend fun open(entry: BrowseEntry) {
         require(entry.isDirectory) { "open() is only for directory entries" }
-        val base = _state.value.currentPath.trimEnd('/')
-        load("$base/${entry.name}")
+
+        val child = entry.path ?: "${_state.value.currentPath.trimEnd('/')}/${entry.name}"
+        load(child, trail = _state.value.breadcrumbs + Breadcrumb(entry.name, child))
     }
 
     /** Jumps back to an earlier breadcrumb, discarding everything below it. */
     suspend fun navigateTo(breadcrumb: Breadcrumb) {
-        load(breadcrumb.path)
+        val trail = _state.value.breadcrumbs
+        val index = trail.indexOfFirst { it.path == breadcrumb.path }
+        load(breadcrumb.path, trail = if (index >= 0) trail.take(index + 1) else listOf(breadcrumb))
     }
 
     /** Narrows (or widens) the visible listing by MIME-prefix category. No round trip to the
@@ -261,15 +286,4 @@ class BrowseViewModel(
             entries.filter { it.isDirectory || filter.matches(it.mime) }
         }
 
-    /** Splits [path] into a breadcrumb per segment, each carrying the full path up to and
-     * including itself, e.g. `/root/Photos` -> `[("root", "/root"), ("Photos", "/root/Photos")]`. */
-    private fun breadcrumbsFor(path: String): List<Breadcrumb> {
-        val segments = path.trim('/').split('/').filter { it.isNotBlank() }
-        if (segments.isEmpty()) return listOf(Breadcrumb(label = "Root", path = "/"))
-        var accumulated = ""
-        return segments.map { segment ->
-            accumulated += "/$segment"
-            Breadcrumb(label = segment, path = accumulated)
-        }
-    }
 }

@@ -117,6 +117,43 @@ public class SlipstreamSessionTests : IAsyncLifetime
         Assert.NotNull(_vault.ValidateBulk(Guid.Parse(payload.Token), Guid.Parse(payload.TransferId)));
     }
 
+    /// <summary>
+    /// These went out as Guid.ToString("N") — 32 hex digits, no dashes. Guid.Parse accepts that
+    /// happily, so every test here passed, but Java's UUID.fromString does not: the Android peer
+    /// threw "Invalid UUID string" the instant it read a pull.ok, and no bulk transfer between
+    /// the two implementations could ever start. Asserted with ParseExact("D") rather than
+    /// Parse, because Parse is precisely the leniency that hid this.
+    /// </summary>
+    [Fact]
+    public async Task Pull_ok_identifiers_are_canonical_uuids_the_peer_can_parse()
+    {
+        var reply = await _session.HandleAsync(
+            ControlMessage.Request("pull.request", "3", new PullRequest(Path.Combine(_dir, "movie.mp4"))), _cts.Token);
+
+        var payload = reply!.PayloadAs<PullResponse>()!;
+
+        Assert.Equal(payload.Token, Guid.ParseExact(payload.Token, "D").ToString("D"));
+        Assert.Equal(payload.TransferId, Guid.ParseExact(payload.TransferId, "D").ToString("D"));
+    }
+
+    /// <summary>
+    /// The peer has to be told where to connect for the bytes. Windows' own client assumes the
+    /// well-known bulk port and reuses the address it is already talking to, so this response
+    /// carried neither — and the Android peer, which reads both as required, threw "Key host is
+    /// missing in the map" on every pull.ok.
+    /// </summary>
+    [Fact]
+    public async Task Pull_ok_says_where_the_bulk_server_is_listening()
+    {
+        var reply = await _session.HandleAsync(
+            ControlMessage.Request("pull.request", "3", new PullRequest(Path.Combine(_dir, "movie.mp4"))), _cts.Token);
+
+        var payload = reply!.PayloadAs<PullResponse>()!;
+
+        Assert.Equal(IPAddress.Loopback.ToString(), payload.Host);
+        Assert.Equal(SlipstreamPorts.Bulk, payload.Port);
+    }
+
     [Fact]
     public async Task Pull_request_for_a_missing_file_returns_an_error()
     {

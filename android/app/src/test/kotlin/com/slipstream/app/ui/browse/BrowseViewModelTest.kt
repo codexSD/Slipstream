@@ -57,7 +57,12 @@ private class FakeController(
     override suspend fun start() = Unit
     override suspend fun reconnect(): Boolean = true
 
+    /** Every path this controller was asked for, in order — so a test can assert what actually
+     * went out on the wire rather than only what the view model displayed afterwards. */
+    val requestedPaths = mutableListOf<String>()
+
     override suspend fun list(path: String): Result<ListResult> {
+        requestedPaths += path
         gate?.await()
         failure?.let { return Result.failure(it) }
         return Result.success(ListResult(entries, truncated))
@@ -99,7 +104,11 @@ private fun entry(
     isDirectory: Boolean = false,
     mime: String? = null,
     thumbnailToken: String? = null,
-) = FileEntry(name = name, size = 10L, mtimeMs = 0L, isDirectory = isDirectory, mime = mime, thumbnailToken = thumbnailToken)
+    path: String? = null,
+) = FileEntry(
+    name = name, size = 10L, mtimeMs = 0L, isDirectory = isDirectory,
+    mime = mime, thumbnailToken = thumbnailToken, path = path,
+)
 
 /**
  * Task 6: browse screen. Directories sort before files; filter chips narrow by MIME prefix;
@@ -180,6 +189,26 @@ class BrowseViewModelTest {
         assertEquals(2, vm.state.value.entries.size)
     }
 
+    /**
+     * The PC's drives were listed on the phone but could not be opened. Descending built the
+     * child path by joining names with "/", so tapping "D:\" from the protocol root asked
+     * Windows for "/D:\" — which is not a path on Windows, and came back as "That folder is
+     * no longer there." The peer sends the path it wants to be asked for; use that.
+     */
+    @Test
+    fun `opening a peer's drive asks for the path the peer gave, not a joined one`() = runTest {
+        val controller = FakeController(
+            entries = listOf(entry("D:\\", isDirectory = true, path = "D:\\")),
+        )
+        val vm = BrowseViewModel(controller)
+        vm.load("/")
+
+        vm.open(vm.state.value.entries.single())
+
+        assertEquals("D:\\", vm.state.value.currentPath)
+        assertEquals(listOf("/", "D:\\"), controller.requestedPaths)
+    }
+
     @Test
     fun `opening a directory pushes a breadcrumb and lists the subfolder`() = runTest {
         val vm = BrowseViewModel(FakeController(entries = listOf(entry("Photos", isDirectory = true))))
@@ -188,7 +217,11 @@ class BrowseViewModelTest {
         vm.open(vm.state.value.entries.single())
 
         assertEquals("/root/Photos", vm.state.value.currentPath)
-        assertEquals(listOf("root", "Photos"), vm.state.value.breadcrumbs.map { it.label })
+        // The first crumb is labelled "Root", not re-derived from the path's last segment:
+        // paths are the peer's to spell (a Windows drive is "D:\\", one segment to a
+        // slash-splitter) so the trail is carried through navigation instead of parsed back
+        // out of a string. See BrowseViewModel.load's remarks.
+        assertEquals(listOf("Root", "Photos"), vm.state.value.breadcrumbs.map { it.label })
     }
 
     @Test
@@ -201,7 +234,7 @@ class BrowseViewModelTest {
         vm.navigateTo(vm.state.value.breadcrumbs.first())
 
         assertEquals("/root", vm.state.value.currentPath)
-        assertEquals(listOf("root"), vm.state.value.breadcrumbs.map { it.label })
+        assertEquals(listOf("Root"), vm.state.value.breadcrumbs.map { it.label })
     }
 
     @Test

@@ -9,6 +9,16 @@ data class FileEntry(
     val mtimeMs: Long,
     val isDirectory: Boolean,
     val mime: String?,
+    /**
+     * The path to ask this entry's owner for, as that owner spells it. Null for entries from a
+     * peer too old to send one, in which case the caller has to fall back to joining names.
+     *
+     * A client cannot construct this itself: joining with "/" produced "/D:\" for a Windows
+     * drive, which means nothing on Windows, so descending from the root of a PC always failed.
+     * The two platforms do not share a path syntax and never will, so the side that owns the
+     * file is the side that says how to name it.
+     */
+    val path: String? = null,
     /** A [com.slipstream.core.media.MediaTokenVault] token for this entry's cached thumbnail,
      * served from `/thumb/<token>` (design.md §9). Null when this entry isn't an image file, or
      * a thumbnail couldn't be generated for it. Populated only by

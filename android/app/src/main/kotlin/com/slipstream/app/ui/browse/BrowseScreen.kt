@@ -102,6 +102,20 @@ fun BrowseScreen(
             )
         }
 
+        val notice = state.notice
+        if (notice != null) {
+            Text(
+                text = notice,
+                style = MeridianText.label,
+                color = MeridianTheme.colors.brand,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { viewModel.dismissNotice() }
+                    .padding(horizontal = MeridianSpacing.md, vertical = MeridianSpacing.xs)
+                    .testTag("browse-notice"),
+            )
+        }
+
         val playbackError = state.playbackError
         if (playbackError != null) {
             Text(

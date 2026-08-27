@@ -68,6 +68,14 @@ data class BrowseState(
     /** All entries for [currentPath], before [filter] narrows them — kept so switching filters
      * never needs a fresh round trip to the peer. */
     val allEntries: List<BrowseEntry> = emptyList(),
+    /**
+     * A transient line about the last action taken here — currently downloads.
+     *
+     * Tapping Download enqueued the transfer and said nothing at all: progress lives on the
+     * Transfers screen, so from Browse the button looked broken and people pressed it again.
+     * An action the user takes has to acknowledge itself where they took it.
+     */
+    val notice: String? = null,
     /** Set only when the peer's listing was capped (design.md's directory-entry cap) — an
      * honest "this isn't everything" notice rather than silently pretending it's complete. */
     val truncationNotice: String? = null,
@@ -238,6 +246,7 @@ class BrowseViewModel(
         onError: (Throwable) -> Unit = {},
     ) {
         val id = UUID.randomUUID().toString()
+        _state.value = _state.value.copy(notice = "Downloading ${destination.name}…")
         transferQueue.enqueue(
             id = id,
             remotePath = remotePath,
@@ -245,13 +254,23 @@ class BrowseViewModel(
             onProgress = {},
             onComplete = {
                 recordHistory(historyStore, remotePath, size, HistoryEntry.State.Completed)
+                _state.value = _state.value.copy(notice = "Saved ${destination.name}")
                 onComplete()
             },
             onError = { _, e ->
                 recordHistory(historyStore, remotePath, size, HistoryEntry.State.Failed)
+                // The reason, not just the fact: a failed transfer that says only "failed"
+                // sends the user back to guessing, which is what the logs exist to end.
+                _state.value = _state.value.copy(
+                    notice = "Couldn't download ${destination.name}: ${e.message ?: "unknown error"}",
+                )
                 onError(e)
             },
         ) { controller.pull(remotePath, destination) }
+    }
+
+    fun dismissNotice() {
+        _state.value = _state.value.copy(notice = null)
     }
 
     /** Runs on [TransferQueue]'s own background (IO) thread already - calls [HistoryStore.saveSync]

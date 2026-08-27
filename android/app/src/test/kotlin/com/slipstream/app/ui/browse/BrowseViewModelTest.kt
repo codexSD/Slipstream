@@ -17,6 +17,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -309,6 +310,53 @@ class BrowseViewModelTest {
         // is what makes this deterministic regardless of how busy that thread pool is.
         kotlinx.coroutines.withTimeout(5_000) { done.await() }
         assertEquals(listOf("/DCIM/photo.jpg"), controller.downloads)
+        queue.close()
+    }
+
+    /**
+     * Tapping Download enqueued the transfer and changed nothing on screen — progress only ever
+     * appeared on the Transfers tab — so from Browse the button looked broken and got pressed
+     * again. An action has to acknowledge itself where it was taken.
+     */
+    @Test
+    fun `downloading says so, and says so again when it lands`() = kotlinx.coroutines.runBlocking {
+        val controller = FakeController()
+        val vm = BrowseViewModel(controller)
+        val queue = TransferQueue()
+        val destination = File.createTempFile("browse-notice-test", ".bin").apply { delete() }
+        val done = CompletableDeferred<Unit>()
+
+        // Collected rather than sampled: the fake transfer finishes almost immediately, so
+        // reading state.value after the call races the completion and usually loses.
+        val notices = mutableListOf<String>()
+        val collectorScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Unconfined)
+        val collector = collectorScope.launch {
+            vm.state.collect { s -> s.notice?.let { if (notices.lastOrNull() != it) notices += it } }
+        }
+
+        vm.download(
+            remotePath = "/DCIM/photo.jpg",
+            destination = destination,
+            size = 100L,
+            transferQueue = queue,
+            historyStore = null,
+            onComplete = { done.complete(Unit) },
+        )
+
+        kotlinx.coroutines.withTimeout(5_000) { done.await() }
+        kotlinx.coroutines.withTimeout(5_000) {
+            while (vm.state.value.notice != "Saved ${destination.name}") kotlinx.coroutines.delay(10)
+        }
+        collector.cancel()
+
+        // The acknowledgement of the tap itself, then of the bytes landing.
+        assertEquals(
+            listOf("Downloading ${destination.name}…", "Saved ${destination.name}"),
+            notices,
+        )
+
+        vm.dismissNotice()
+        assertEquals(null, vm.state.value.notice)
         queue.close()
     }
 

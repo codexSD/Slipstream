@@ -30,7 +30,7 @@ class ControlConnection(
     private val output = socket.getOutputStream()
 
     fun send(message: ControlMessage) {
-        SlipstreamLog.i("wire", "-> ${message.type} id=${message.id} ${describe(message)}")
+        trace("->", message)
         JsonLineCodec.writeMessage(output, message)
     }
 
@@ -38,6 +38,19 @@ class ControlConnection(
      * message carries whatever they copied, and neither belongs in a log. */
     private fun describe(message: ControlMessage): String =
         message.payload?.keys?.joinToString(",", "{", "}") ?: "{}"
+
+    /**
+     * The heartbeat is not logged.
+     *
+     * At one round trip every 750ms it produced roughly 160 lines a minute, which is enough to
+     * push everything else — the connect, the transfer, the failure being investigated — out of
+     * logcat's ring buffer within about a minute of it happening. A log that evicts the
+     * interesting events to record that nothing is wrong is worse than no log.
+     */
+    private fun trace(direction: String, message: ControlMessage) {
+        if (message.type == SessionMessageTypes.PING || message.type == SessionMessageTypes.PONG) return
+        SlipstreamLog.i("wire", "$direction ${message.type} id=${message.id} ${describe(message)}")
+    }
 
     /**
      * Returns the next message, or null if the peer closed the connection.
@@ -53,7 +66,7 @@ class ControlConnection(
             if (message == null) {
                 SlipstreamLog.i("wire", "<- (peer closed the connection)")
             } else {
-                SlipstreamLog.i("wire", "<- ${message.type} id=${message.id} ${describe(message)}")
+                trace("<-", message)
             }
             return message
         } catch (e: LineTooLargeException) {

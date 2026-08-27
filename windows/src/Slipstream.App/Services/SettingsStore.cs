@@ -42,8 +42,7 @@ public sealed class SettingsStore
     /// <see cref="HistoryStore.DefaultPath"/>.</summary>
     public static string DefaultPath()
     {
-        var root = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        return Path.Combine(root, "Slipstream", "settings.json");
+        return Path.Combine(Slipstream.Core.SlipstreamPaths.StateDirectory, "settings.json");
     }
 
     /// <summary>The fallback download folder used when a chosen path no longer exists on

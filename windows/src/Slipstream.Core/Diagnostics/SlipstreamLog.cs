@@ -21,9 +21,7 @@ public static class SlipstreamLog
     /// <summary>Rolled at this size so an always-on log cannot grow without bound.</summary>
     private const long MaxBytes = 4 * 1024 * 1024;
 
-    public static string Path { get; } = System.IO.Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "Slipstream", "slipstream.log");
+    public static string Path { get; } = SlipstreamPaths.LogFile;
 
     public static void Info(string area, string message) => Write(area, message, null);
 

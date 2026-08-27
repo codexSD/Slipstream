@@ -37,8 +37,7 @@ public sealed class HistoryStore
     /// equivalent unpackaged convention).</summary>
     public static string DefaultPath()
     {
-        var root = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        return Path.Combine(root, "Slipstream", "history.json");
+        return Path.Combine(Slipstream.Core.SlipstreamPaths.StateDirectory, "history.json");
     }
 
     /// <summary>Appends one completed transfer, evicting the oldest entry if the store is now

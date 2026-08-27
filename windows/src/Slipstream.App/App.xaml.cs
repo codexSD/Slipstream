@@ -63,9 +63,7 @@ public partial class App : Application
 
     /// <summary>Path of the crash log written when startup fails; also read by the smoke test.</summary>
     public static string FatalLogPath => System.IO.Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "Slipstream",
-        "startup-error.log");
+        Slipstream.Core.SlipstreamPaths.StateDirectory, "startup-error.log");
 
     internal static void LogFatal(Exception exception)
     {
@@ -121,8 +119,10 @@ public partial class App : Application
         var settingsStore = new SettingsStore();
         var settings = settingsStore.Load();
 
-        var stateDirectory = System.IO.Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Slipstream");
+        // One fixed location regardless of how this process was launched — see
+        // SlipstreamPaths for why LocalApplicationData could not be trusted for this.
+        Slipstream.Core.SlipstreamPaths.MigrateLegacyState();
+        var stateDirectory = Slipstream.Core.SlipstreamPaths.StateDirectory;
 
         var peer = new SlipstreamPeer(stateDirectory, Environment.MachineName)
         {
